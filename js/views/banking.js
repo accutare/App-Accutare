@@ -16,6 +16,7 @@ function linkLabel(t) {
   if (l.type === 'expense') { const e = store.find('expenses', l.id); return `Expense · ${esc(e?.category || '')}`; }
   if (l.type === 'otherIncome') { const r = store.find('otherIncome', l.id); return `Income · ${esc(r?.category || '')}`; }
   if (l.type === 'invoices') { const i = store.find('invoices', l.id); return `<a href="#/invoices/${l.id}">Payment · invoice #${esc(i?.number)}</a>`; }
+  if (l.type === 'split') return `Split · ${l.items.length} lines`;
   if (l.type === 'account') return `Transfer / journal · ${esc(store.find('accounts', l.id)?.name || '')}`;
   if (l.type === 'bills') return `<a href="#/bills/${l.id}">Bill payment · ${esc(store.vendorName(store.find('bills', l.id)?.vendorId))}</a>`;
   return '';
@@ -34,6 +35,8 @@ function candidates(t) {
 }
 
 function guessCategory(t) {
+  const rule = store.matchRule(t);
+  if (rule?.action === 'categorise') return rule.category;
   const d = t.description.toLowerCase();
   const rules = [[/shell|bp |esso|fuel|parking|dvla/, 'Vehicle'], [/gas|electric|water|edf|octopus|bt /, 'Utilities'], [/amazon|staples|viking/, 'Office supplies'],
     [/microsoft|google|adobe|xero|apple/, 'Software'], [/rent/, 'Rent'], [/insur/, 'Insurance'], [/fee|charge/, 'Bank charges'],
@@ -61,8 +64,10 @@ function openPost(t) {
           { name: 'category', label: 'Category', type: 'select', options: cats, value: guessCategory(t) },
           { name: 'vat', label: 'VAT included', type: 'number', step: '0.01', value: 0 },
         ])}
-        <button type="button" class="link-btn" data-calc-vat>Calculate VAT at ${co.vatRate}%</button>
-        <footer class="modal-foot"><button type="button" class="btn ghost" data-exclude>Exclude</button><button class="btn primary">Add</button></footer>
+        <button type="button" class="link-btn" data-calc-vat>Calculate VAT at ${co.vatRate}%</button> · <button type="button" class="link-btn" data-split>Split into several categories</button>
+        <div data-split-box hidden><table class="table lines"><thead><tr><th>Category</th><th>Amount (incl. VAT)</th><th>VAT</th><th>Memo</th><th></th></tr></thead><tbody data-splits></tbody></table>
+          <button type="button" class="btn ghost sm" data-add-split>${icon('plus', 16)} Add split</button> <span class="muted small" data-split-left></span></div>
+        <footer class="modal-foot"><button type="button" class="btn ghost" data-make-rule>Create rule</button><button type="button" class="btn ghost" data-exclude>Exclude</button><button class="btn primary">Add</button></footer>
       </form>
       <form data-form="match" ${exact ? '' : 'hidden'}>
         <div class="choice-list">${cands.map((c, i) => `<label class="choice"><input type="radio" name="id" value="${c.id}" ${(exact ? c === exact : i === 0) ? 'checked' : ''}>
@@ -88,8 +93,36 @@ function openPost(t) {
         cf.elements.vat.value = round2(g - g / (1 + co.vatRate / 100)).toFixed(2);
       });
       cf.querySelector('[data-exclude]').addEventListener('click', () => { store.postBankTransaction(t, 'exclude'); closeModal(); });
+      cf.querySelector('[data-make-rule]').addEventListener('click', () => {
+        const d = readForm(cf);
+        closeModal();
+        openRuleForm(null, { name: t.description.slice(0, 30), text: t.description.split(/\s+/).slice(0, 2).join(' '), direction: t.amount < 0 ? 'out' : 'in', action: 'categorise', category: d.category, payee: d.payee });
+      });
+      const sbox = cf.querySelector('[data-split-box]'), sbody = cf.querySelector('[data-splits]');
+      const splitRow = (amt = '') => `<tr><td><select data-k="category">${cats.map((c) => `<option>${esc(c)}</option>`).join('')}</select></td>
+        <td><input data-k="amount" type="number" step="0.01" value="${amt}"></td><td><input data-k="vat" type="number" step="0.01" value="0"></td><td><input data-k="memo"></td>
+        <td><button type="button" class="icon-btn" data-rm-split>${icon('trash', 16)}</button></td></tr>`;
+      const readSplits = () => [...sbody.querySelectorAll('tr')].map((tr) => Object.fromEntries([...tr.querySelectorAll('[data-k]')].map((el) => [el.dataset.k, el.type === 'number' ? Number(el.value || 0) : el.value])));
+      const leftover = () => round2(Math.abs(t.amount) - readSplits().reduce((a, x) => a + x.amount, 0));
+      const showLeft = () => { cf.querySelector('[data-split-left]').textContent = leftover() ? `${money(leftover(), co.currency)} left to assign` : 'Fully assigned ✓'; };
+      cf.querySelector('[data-split]').addEventListener('click', () => {
+        sbox.hidden = !sbox.hidden;
+        if (!sbox.hidden && !sbody.children.length) sbody.innerHTML = splitRow(Math.abs(t.amount)) + splitRow(0);
+        cf.elements.category.closest('.field').hidden = !sbox.hidden;
+        cf.elements.vat.closest('.field').hidden = !sbox.hidden;
+        showLeft();
+      });
+      cf.querySelector('[data-add-split]').addEventListener('click', () => { sbody.insertAdjacentHTML('beforeend', splitRow(leftover())); showLeft(); });
+      sbody.addEventListener('input', showLeft);
+      sbody.addEventListener('click', (e) => { if (e.target.closest('[data-rm-split]')) { e.target.closest('tr').remove(); showLeft(); } });
       cf.addEventListener('submit', (e) => {
         e.preventDefault();
+        if (!sbox.hidden) {
+          const splits = readSplits().filter((x) => x.amount);
+          if (leftover()) return toast('The split amounts must add up to the transaction');
+          store.postBankTransaction(t, 'categorise', { ...readForm(cf), splits });
+          closeModal(); toast('Split added to your books'); return;
+        }
         store.postBankTransaction(t, 'categorise', readForm(cf));
         closeModal(); toast('Added to your books');
       });
@@ -113,7 +146,7 @@ function openImport() {
   openModal({
     title: `Import into ${currentAccount()?.name}`,
     body: `<p class="muted">Upload a CSV exported from your online banking. Columns needed: date, description and either <em>amount</em> or <em>paid in / paid out</em>. Duplicates are skipped.</p>
-      <label class="btn">Choose CSV file<input type="file" accept=".csv,text/csv" data-file hidden></label>
+      <label class="btn">Choose CSV / OFX / QFX file<input type="file" accept=".csv,.ofx,.qfx,text/csv" data-file hidden></label>
       <p class="muted small">Or add one transaction by hand:</p>
       <form>${fields([
         { name: 'date', label: 'Date', type: 'date', value: today(), required: true },
@@ -124,7 +157,8 @@ function openImport() {
       m.querySelector('[data-file]').addEventListener('change', async (e) => {
         const f = e.target.files[0];
         if (!f) return;
-        const list = store.parseBankCsv(await f.text());
+        const text = await f.text();
+        const list = /<OFX>|<STMTTRN>/i.test(text) ? store.parseOFX(text) : store.parseBankCsv(text);
         if (!list.length) return toast('No transactions found in that file');
         const n = store.importBankTransactions(list, acctId);
         closeModal(); toast(`${n} transaction${n === 1 ? '' : 's'} imported`);
@@ -195,16 +229,8 @@ function bookBalance(id) {
   return store.find('accounts', id)?.type === 'credit_card' ? round2(b) : round2(b);
 }
 
-export function render() {
-  const s = store.get();
-  const cur = s.company.currency;
-  const acc = currentAccount();
-  if (!acc) return emptyState('No bank accounts. Add one to start.') + '<p style="text-align:center"><button class="btn primary" data-add-acct>Add bank account</button></p>';
-  const all = s.bankTransactions.filter((t) => t.accountId === acc.id).sort((a, b) => b.date.localeCompare(a.date));
-  const review = all.filter((t) => t.status === 'new');
-  const rows = tab === 'review' ? review : all.filter((t) => t.status !== 'new');
-  return `
-    <section class="bank-cards">${store.bankAccounts().map((a) => { const n = s.bankTransactions.filter((t) => t.accountId === a.id && t.status === 'new').length; return `
+function bankHeaderHtml(s, acc, cur) {
+  return `    <section class="bank-cards">${store.bankAccounts().map((a) => { const n = s.bankTransactions.filter((t) => t.accountId === a.id && t.status === 'new').length; return `
       <button class="card bank-card ${a.id === acc.id ? 'active' : ''}" data-acct="${a.id}"><span>${a.type === 'credit_card' ? 'Credit card' : 'Bank'}</span><strong>${esc(a.name)}</strong>
         <em>${money(store.bankBalance(a.id), cur)}</em>${n ? `<small class="badge badge-overdue">${n} to review</small>` : '<small class="muted">Up to date</small>'}</button>`; }).join('')}
       <button class="card bank-card add" data-add-acct>${icon('plus')}<span>Add account</span></button></section>
@@ -213,15 +239,37 @@ export function render() {
       <div class="card kpi"><span>In your books</span><strong>${money(bookBalance(acc.id), cur)}</strong></div>
       <div class="card kpi"><span>Reconciled balance</span><strong>${money(store.reconciledBalance(acc.id), cur)}</strong></div>
     </section>
+    `;
+}
+
+export function render() {
+  const s = store.get();
+  const cur = s.company.currency;
+  const acc = currentAccount();
+  if (!acc) return emptyState('No bank accounts. Add one to start.') + '<p style="text-align:center"><button class="btn primary" data-add-acct>Add bank account</button></p>';
+  const bankHeader = () => bankHeaderHtml(s, acc, cur);
+  const all = s.bankTransactions.filter((t) => t.accountId === acc.id).sort((a, b) => b.date.localeCompare(a.date));
+  const review = all.filter((t) => t.status === 'new');
+  const rows = tab === 'review' ? review : all.filter((t) => t.status !== 'new');
+  const rulesHtml = () => `<div class="toolbar"><span class="muted">Rules categorise matching bank lines for you. Turn on “add automatically” to skip the review.</span>
+    <div class="actions"><button class="btn" data-run-rules>Apply rules to “For review”</button><button class="btn primary" data-new-rule>${icon('plus')} New rule</button></div></div>
+    ${s.bankRules.length ? `<div class="card table-card"><table class="table"><thead><tr><th>Rule</th><th>When description contains</th><th>Then</th><th>Auto-add</th></tr></thead>
+    <tbody>${s.bankRules.map((r) => `<tr data-rule="${r.id}"><td><strong>${esc(r.name)}</strong>${r.active === false ? ' <span class="muted">(off)</span>' : ''}</td><td>${esc(r.text)} · ${r.direction === 'in' ? 'money in' : r.direction === 'out' ? 'money out' : 'any'}</td>
+      <td>${r.action === 'transfer' ? `Transfer to ${esc(store.find('accounts', r.targetAccountId)?.name || '')}` : r.action === 'exclude' ? 'Exclude' : `Categorise as ${esc(r.category)}${r.vatRate ? ` (VAT ${r.vatRate}%)` : ''}`}</td>
+      <td>${r.autoAdd ? 'Yes' : 'No'}</td></tr>`).join('')}</tbody></table></div>` : emptyState('No rules yet. Tip: when reviewing a transaction, click “Create rule”.')}`;
+  const tabsBar = `<div class="toolbar"><div class="tabs" style="margin:0"><button class="tab" data-tab="review">For review (${review.length})</button><button class="tab" data-tab="posted">Categorised</button><button class="tab active" data-tab="rules">Rules (${s.bankRules.length})</button></div></div>`;
+  if (tab === 'rules') return bankHeader() + tabsBar + rulesHtml();
+  return bankHeader() + `
     <div class="toolbar">
       <div class="tabs" style="margin:0"><button class="tab ${tab === 'review' ? 'active' : ''}" data-tab="review">For review (${review.length})</button>
-        <button class="tab ${tab === 'posted' ? 'active' : ''}" data-tab="posted">Categorised</button></div>
+        <button class="tab ${tab === 'posted' ? 'active' : ''}" data-tab="posted">Categorised</button>
+        <button class="tab ${tab === 'rules' ? 'active' : ''}" data-tab="rules">Rules (${s.bankRules.length})</button></div>
       <div class="actions wrap"><button class="btn" data-reconcile>Reconcile</button><button class="btn primary" data-import>${icon('plus')} Import / add</button></div>
     </div>
     ${rows.length ? `<div class="card table-card"><table class="table">
       <thead><tr><th>Date</th><th>Description</th><th class="hide-sm">${tab === 'review' ? 'Suggestion' : 'Added as'}</th><th class="num">Spent</th><th class="num">Received</th><th></th></tr></thead>
       <tbody>${rows.map((t) => {
-        const sug = tab === 'review' ? (() => { const c = candidates(t)[0]; return c && Math.abs(c.balance - Math.abs(t.amount)) < 0.005 ? `Match: ${esc(c.label)}` : `Categorise: ${guessCategory(t)}`; })() : linkLabel(t);
+        const sug = tab === 'review' ? (() => { const c = candidates(t)[0]; const r = store.matchRule(t); if (r) return `Rule “${esc(r.name)}”: ${r.action === 'transfer' ? 'transfer' : r.action === 'exclude' ? 'exclude' : esc(r.category)}`; return c && Math.abs(c.balance - Math.abs(t.amount)) < 0.005 ? `Match: ${esc(c.label)}` : `Categorise: ${guessCategory(t)}`; })() : linkLabel(t);
         return `<tr><td>${fmtDate(t.date)}</td><td><strong>${esc(t.description)}</strong>${t.reconciled ? ' <span class="badge badge-paid">R</span>' : ''}<small class="show-sm">${sug}</small></td>
         <td class="hide-sm">${sug}</td>
         <td class="num">${t.amount < 0 ? money(-t.amount, cur) : ''}</td><td class="num">${t.amount > 0 ? money(t.amount, cur) : ''}</td>
@@ -230,11 +278,55 @@ export function render() {
       : emptyState(tab === 'review' ? 'All caught up — nothing to review.' : 'Nothing categorised yet.')}`;
 }
 
+export function openRuleForm(existing, preset = {}) {
+  const s = store.get();
+  const r = existing || { direction: 'out', action: 'categorise', autoAdd: false, active: true, vatRate: 0, ...preset };
+  openModal({
+    title: existing ? 'Edit rule' : 'New bank rule',
+    body: `<form>${fields([
+      { name: 'name', label: 'Rule name', required: true, full: true },
+      { name: 'text', label: 'Description contains (use | for “or”)', required: true, placeholder: 'e.g. shell | bp | esso' },
+      { name: 'direction', label: 'Applies to', type: 'select', options: [['out', 'Money out'], ['in', 'Money in'], ['any', 'Both']] },
+      { name: 'minAmount', label: 'Min amount (optional)', type: 'number', step: '0.01' }, { name: 'maxAmount', label: 'Max amount (optional)', type: 'number', step: '0.01' },
+      { name: 'accountId', label: 'Only for account', type: 'select', options: [['', 'All bank accounts'], ...store.bankAccounts().map((a) => [a.id, a.name])] },
+      { name: 'action', label: 'Then', type: 'select', options: [['categorise', 'Categorise'], ['transfer', 'Record as transfer / other account'], ['exclude', 'Exclude']] },
+      { name: 'category', label: 'Category', type: 'select', options: [...store.expenseCategories(), ...store.incomeCategories()] },
+      { name: 'vatRate', label: 'VAT % included', type: 'number', step: 'any' },
+      { name: 'payee', label: 'Payee name (optional)' },
+      { name: 'targetAccountId', label: 'Transfer account', type: 'select', options: s.accounts.filter((a) => ['bank', 'credit_card', 'current_liability', 'long_term_liability', 'equity', 'current_asset'].includes(a.type)).map((a) => [a.id, `${a.code} ${a.name}`]) },
+      { name: 'autoAdd', label: 'Add automatically (skip review)', type: 'select', options: [['', 'No – suggest only'], ['1', 'Yes']] },
+      { name: 'active', label: 'Status', type: 'select', options: [['1', 'On'], ['', 'Off']] },
+    ], { ...r, autoAdd: r.autoAdd ? '1' : '', active: r.active === false ? '' : '1' })}
+    <footer class="modal-foot">${existing ? `<button type="button" class="btn danger" data-delete>${icon('trash', 16)}</button>` : ''}<button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Save rule</button></footer></form>`,
+    onMount(m) {
+      const form = m.querySelector('form');
+      const sync = () => { const a = form.elements.action.value;
+        ['category', 'vatRate', 'payee'].forEach((n) => { form.elements[n].closest('.field').hidden = a !== 'categorise'; });
+        form.elements.targetAccountId.closest('.field').hidden = a !== 'transfer'; };
+      form.elements.action.addEventListener('change', sync); sync();
+      form.querySelector('[data-delete]')?.addEventListener('click', () => { if (confirmDialog('Delete rule?')) { store.remove('bankRules', existing.id); closeModal(); } });
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const d = readForm(form);
+        store.upsert('bankRules', { ...(existing || {}), ...d, autoAdd: d.autoAdd === '1', active: d.active === '1' });
+        closeModal(); toast('Rule saved');
+      });
+    },
+  });
+}
+
 export function mount(root, _p, app) {
+  root.querySelector('[data-new-rule]')?.addEventListener('click', () => openRuleForm());
+  root.querySelectorAll('[data-rule]').forEach((tr) => tr.addEventListener('click', () => openRuleForm(store.find('bankRules', tr.dataset.rule))));
+  root.querySelector('[data-run-rules]')?.addEventListener('click', () => {
+    let n = 0;
+    for (const t of store.get().bankTransactions.filter((x) => x.status === 'new' && x.accountId === acctId)) { const r = store.matchRule(t); if (r) { store.applyRule(t, r); n++; } }
+    toast(`${n} transaction(s) added by rules`);
+  });
   root.querySelectorAll('[data-acct]').forEach((b) => b.addEventListener('click', () => { acctId = b.dataset.acct; app.rerender(); }));
   root.querySelectorAll('[data-add-acct]').forEach((b) => b.addEventListener('click', () => openAccountForm({ name: '', type: 'bank', code: '' }, true)));
-  if (!root.querySelector('[data-import]')) return;
   root.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => { tab = b.dataset.tab; app.rerender(); }));
+  if (!root.querySelector('[data-import]')) return;
   root.querySelector('[data-import]').addEventListener('click', openImport);
   root.querySelector('[data-reconcile]').addEventListener('click', openReconcile);
   root.querySelectorAll('[data-post]').forEach((b) => b.addEventListener('click', () => openPost(store.find('bankTransactions', b.dataset.post))));

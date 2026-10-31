@@ -48,6 +48,7 @@ function defaults() {
     salesReceipts: [],
     vendorCredits: [],
     purchaseOrders: [],
+    bankRules: [],
     vatReturns: [],
     users: [],
     customers: [],
@@ -389,7 +390,15 @@ export function reconciledBalance(accountId) {
 export function postBankTransaction(txn, kind, opts = {}) {
   const amt = Math.abs(Number(txn.amount));
   let link = null;
-  if (kind === 'categorise' && txn.amount < 0) {
+  if (kind === 'categorise' && opts.splits?.length) {
+    const items = opts.splits.map((sp) => {
+      const rec = txn.amount < 0
+        ? upsert('expenses', { date: txn.date, payee: opts.payee || txn.description, category: sp.category, amount: Math.abs(sp.amount), vat: Number(sp.vat || 0), method: 'Bank', notes: `Split · ${sp.memo || ''}`, bankTxnId: txn.id })
+        : upsert('otherIncome', { date: txn.date, description: `${txn.description} · ${sp.memo || ''}`, category: sp.category, amount: Math.abs(sp.amount), vat: Number(sp.vat || 0), bankTxnId: txn.id });
+      return { type: txn.amount < 0 ? 'expense' : 'otherIncome', id: rec.id };
+    });
+    link = { type: 'split', items };
+  } else if (kind === 'categorise' && txn.amount < 0) {
     const e = upsert('expenses', { date: txn.date, payee: opts.payee || txn.description, category: opts.category,
       amount: amt, vat: Number(opts.vat || 0), method: 'Bank', notes: 'From bank feed', bankTxnId: txn.id });
     link = { type: 'expense', id: e.id };
@@ -411,6 +420,7 @@ export function postBankTransaction(txn, kind, opts = {}) {
 
 export function undoBankTransaction(txn) {
   const l = txn.link;
+  if (l?.type === 'split') for (const it of l.items) remove(it.type === 'expense' ? 'expenses' : 'otherIncome', it.id);
   if (l?.type === 'expense') remove('expenses', l.id);
   if (l?.type === 'otherIncome') remove('otherIncome', l.id);
   if (l?.type === 'invoices' || l?.type === 'bills') {
@@ -460,6 +470,43 @@ function parseCsvLine(line) {
   return out;
 }
 
+/** First bank rule that matches a bank line, or null. */
+export function matchRule(t) {
+  const d = String(t.description || '').toLowerCase();
+  return state.bankRules.filter((r) => r.active !== false).find((r) => {
+    if (r.direction === 'in' && t.amount < 0) return false;
+    if (r.direction === 'out' && t.amount > 0) return false;
+    if (r.accountId && r.accountId !== t.accountId) return false;
+    const words = String(r.text || '').toLowerCase().split('|').map((w) => w.trim()).filter(Boolean);
+    if (words.length && !words.some((w) => d.includes(w))) return false;
+    const amt = Math.abs(t.amount);
+    if (r.minAmount && amt < Number(r.minAmount)) return false;
+    if (r.maxAmount && amt > Number(r.maxAmount)) return false;
+    return true;
+  }) || null;
+}
+
+/** Apply a rule to a bank line (adds it to the books). */
+export function applyRule(t, r) {
+  if (r.action === 'transfer') return postBankTransaction(t, 'account', { accountId: r.targetAccountId });
+  if (r.action === 'exclude') return postBankTransaction(t, 'exclude');
+  const gross = Math.abs(t.amount), rate = Number(r.vatRate || 0);
+  postBankTransaction(t, 'categorise', { category: r.category, payee: r.payee || t.description, vat: rate ? round2(gross - gross / (1 + rate / 100)) : 0 });
+}
+
+/** Parse an OFX/QFX bank statement. */
+export function parseOFX(text) {
+  const out = [];
+  for (const m of text.matchAll(/<STMTTRN>([\s\S]*?)(?:<\/STMTTRN>|(?=<STMTTRN>)|<\/BANKTRANLIST>)/gi)) {
+    const tag = (n) => (m[1].match(new RegExp(`<${n}>([^<\r\n]*)`, 'i')) || [])[1]?.trim() || '';
+    const dt = tag('DTPOSTED');
+    const amount = round2(Number(tag('TRNAMT')));
+    if (!dt || !amount) continue;
+    out.push({ date: `${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`, amount, description: [tag('NAME'), tag('MEMO')].filter(Boolean).join(' ').trim() || tag('FITID'), fitId: tag('FITID') });
+  }
+  return out;
+}
+
 export function importBankTransactions(list, accountId) {
   accountId ||= bankAccounts()[0]?.id;
   const seen = new Set(state.bankTransactions.filter((t) => t.accountId === accountId).map((t) => `${t.date}|${t.amount}|${t.description}`));
@@ -473,6 +520,11 @@ export function importBankTransactions(list, accountId) {
     added++;
   }
   save();
+  // auto-add lines that match a rule set to "add automatically"
+  for (const t of state.bankTransactions.filter((x) => x.status === 'new' && x.accountId === accountId)) {
+    const r = matchRule(t);
+    if (r?.autoAdd) applyRule(t, r);
+  }
   return added;
 }
 
