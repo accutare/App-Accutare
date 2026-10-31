@@ -58,6 +58,9 @@ export function render() {
         <button class="btn" data-export>Export backup (JSON)</button>
         <label class="btn">Import backup<input type="file" accept="application/json" data-import hidden></label>
         <button class="btn" data-demo>Load demo data</button>
+        <label class="btn">Import customers (CSV)<input type="file" accept=".csv" data-import-list="customers" hidden></label>
+        <label class="btn">Import suppliers (CSV)<input type="file" accept=".csv" data-import-list="vendors" hidden></label>
+        <label class="btn">Import products (CSV)<input type="file" accept=".csv" data-import-list="products" hidden></label>
         <button class="btn danger" data-reset>Erase all data</button>
       </div>
     </div>`;
@@ -100,6 +103,11 @@ export function mount(root) {
     if (!file) return;
     try { store.importJSON(await file.text()); toast('Backup restored'); } catch (err) { toast(err.message); }
   });
+  root.querySelectorAll('[data-import-list]').forEach((inp) => inp.addEventListener('change', async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const n = store.importList(inp.dataset.importList, await f.text());
+    toast(n ? `${n} imported` : 'Nothing new found — the file needs a header row with a "Name" column');
+  }));
   root.querySelector('[data-demo]').addEventListener('click', () => {
     if (confirmDialog('Replace all data with demo data?')) { store.reset(true); toast('Demo data loaded'); }
   });
@@ -108,7 +116,7 @@ export function mount(root) {
   });
 }
 
-const ROLE_LABEL = { owner: 'Owner', admin: 'Admin (full access + users)', standard: 'Standard (full access)', accountant: 'Accountant', viewer: 'Viewer (read-only)' };
+const ROLE_LABEL = { owner: 'Owner', admin: 'Admin (full access + users)', standard: 'Standard (all except payroll)', accountant: 'Accountant (full access)', sales: 'Sales only', purchases: 'Purchases only', viewer: 'Viewer (read-only)' };
 
 async function mountTeam(root) {
   const box = root.querySelector('[data-users]');

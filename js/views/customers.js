@@ -1,5 +1,6 @@
 import * as store from '../store.js';
 import { money, esc, fmtDate, icon, today } from '../utils.js';
+import { attachmentsBox, mountAttachments } from '../files.js';
 import { openModal, closeModal, fields, readForm, toast, confirmDialog, emptyState, searchBox, bindFilter, badge } from '../ui.js';
 
 export const title = 'Customers';
@@ -58,6 +59,7 @@ function renderDetail(id) {
       <div class="right"><span class="muted">Open balance</span><strong class="big">${money(store.customerBalance(id), cur)}</strong>
         <div class="actions"><button class="btn" data-edit>Edit</button><button class="btn danger" data-delete>${icon('trash', 16)}</button><a class="btn" href="#/statement/${c.id}">Statement</a><button class="btn" data-credit>Credit note</button><button class="btn" data-estimate>New estimate</button><button class="btn" data-receive>Receive payment</button><button class="btn primary" data-invoice>New invoice</button></div></div>
     </div>
+    ${attachmentsBox(c)}
     <div class="card table-card"><table class="table">
       <thead><tr><th>No.</th><th>Date</th><th class="hide-sm">Due</th><th>Status</th><th class="num">Total</th></tr></thead>
       <tbody>${invoices.map((i) => `<tr data-href="#/invoices/${i.id}"><td>#${esc(i.number)}</td><td>${fmtDate(i.date)}</td>
@@ -71,6 +73,7 @@ export function mount(root, params, app) {
   if (!params.id) return;
   const c = store.find('customers', params.id);
   root.querySelector('[data-edit]')?.addEventListener('click', () => openCustomerForm(c));
+  mountAttachments(root, 'customers', c.id);
   root.querySelector('[data-credit]')?.addEventListener('click', () => app.quickCreate('credit', { customerId: c.id }));
   root.querySelector('[data-receive]')?.addEventListener('click', () => {
     openModal({

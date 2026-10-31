@@ -3,6 +3,7 @@ import { lineNet } from '../utils.js';
 import { money, esc, fmtDate, icon, round2 } from '../utils.js';
 import { toast, confirmDialog, emptyState, searchBox, bindFilter, badge } from '../ui.js';
 import { openInvoiceForm, docHeader, docLines } from './invoices.js';
+import { attachmentsBox, mountAttachments } from '../files.js';
 
 export const title = 'Estimates';
 
@@ -53,7 +54,7 @@ function renderDetail(id) {
       <div class="doc-foot"><p class="pre">${esc(est.notes)}</p>
         <dl class="totals"><dt>Subtotal</dt><dd>${money(t.subtotal, cur)}</dd><dt>VAT</dt><dd>${money(t.vat, cur)}</dd>
         <dt class="grand">Total</dt><dd class="grand">${money(t.total, cur)}</dd></dl></div>
-    </article>`;
+    </article>${attachmentsBox(est)}`;
 }
 
 export function mount(root, params) {
@@ -63,6 +64,7 @@ export function mount(root, params) {
   const est = store.find('estimates', params.id);
   if (!est) return;
   root.querySelector('[data-edit]').addEventListener('click', () => openEstimateForm(est));
+  mountAttachments(root, 'estimates', est.id);
   root.querySelector('[data-print]').addEventListener('click', () => window.print());
   root.querySelector('[data-decline]')?.addEventListener('click', () => store.upsert('estimates', { ...est, status: 'declined' }));
   root.querySelector('[data-convert]')?.addEventListener('click', () => {

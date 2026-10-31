@@ -2,6 +2,7 @@ import * as store from '../store.js';
 import { money, esc, fmtDate, today, addDays, icon, uid, round2 } from '../utils.js';
 import { openModal, closeModal, fields, readForm, toast, confirmDialog, emptyState, searchBox, bindFilter, badge } from '../ui.js';
 import { openVendorForm } from './vendors.js';
+import { attachmentsBox, mountAttachments } from '../files.js';
 
 export const title = 'Bills';
 
@@ -151,6 +152,7 @@ function renderDetail(id) {
       <tbody>${b.lines.map((l) => `<tr><td>${esc(l.category)}</td><td>${esc(l.description)}</td><td class="num">${l.vatRate}%</td><td class="num">${money(l.amount, cur)}</td></tr>`).join('')}</tbody>
       <tfoot><tr><td colspan="3">Subtotal</td><td class="num">${money(t.subtotal, cur)}</td></tr><tr><td colspan="3">VAT</td><td class="num">${money(t.vat, cur)}</td></tr>
       <tr><td colspan="3"><strong>Total</strong></td><td class="num"><strong>${money(t.total, cur)}</strong></td></tr></tfoot></table></div>
+    ${attachmentsBox(b)}
     ${(b.payments || []).length ? `<div class="card"><h3>Payments</h3><ul class="list">${b.payments.map((p) => `<li><div><strong>${money(p.amount, cur)}</strong>
       <small>${fmtDate(p.date)} · ${esc(p.method)}</small></div>${p.bankTxnId && !p.vendorCreditId ? '<small class="muted">From bank</small>' : `<button class="icon-btn" data-del-payment="${p.id}" aria-label="Delete payment">${icon('trash', 16)}</button>`}</li>`).join('')}</ul></div>` : ''}`;
 }
@@ -166,6 +168,7 @@ export function mount(root, params) {
   const b = store.find('bills', params.id);
   if (!b) return;
   root.querySelector('[data-edit]').addEventListener('click', () => openBillForm(b));
+  mountAttachments(root, 'bills', b.id);
   root.querySelector('[data-pay]')?.addEventListener('click', () => openPayBill(b));
   root.querySelector('[data-apply-credit]')?.addEventListener('click', () => {
     let left = store.billTotals(b).balance, used = 0;

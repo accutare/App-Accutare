@@ -4,6 +4,7 @@ import { money, esc, fmtDate, today, addDays, icon, uid, round2 } from '../utils
 import { openModal, closeModal, fields, readForm, toast, confirmDialog, emptyState, searchBox, bindFilter, badge } from '../ui.js';
 import { openCustomerForm } from './customers.js';
 import { openRecurringForm } from './recurring.js';
+import { attachmentsBox, mountAttachments } from '../files.js';
 
 export const CURRENCIES = ['GBP', 'EUR', 'USD', 'BRL', 'CAD', 'AUD', 'CHF', 'PLN'];
 
@@ -284,6 +285,7 @@ function renderDetail(id) {
         </dl>
       </div>
     </article>
+    ${attachmentsBox(inv)}
     ${(inv.payments || []).length ? `<div class="card no-print"><h3>Payments</h3><ul class="list">${inv.payments.map((p) => `
       <li><div><strong>${money(p.amount, cur)}</strong><small>${fmtDate(p.date)} · ${esc(p.method)}</small></div>
       ${p.creditId ? `<button class="icon-btn" data-del-payment="${p.id}" aria-label="Remove credit">${icon('trash', 16)}</button>` : p.bankTxnId ? '<small class="muted">From bank</small>' : `<button class="icon-btn" data-del-payment="${p.id}" aria-label="Delete payment">${icon('trash', 16)}</button>`}</li>`).join('')}</ul></div>` : ''}`;
@@ -300,6 +302,7 @@ export function mount(root, params) {
   const inv = store.find('invoices', params.id);
   if (!inv) return;
   root.querySelector('[data-edit]').addEventListener('click', () => openInvoiceForm(inv));
+  mountAttachments(root, 'invoices', inv.id);
   root.querySelector('[data-print]').addEventListener('click', () => window.print());
   root.querySelector('[data-apply-credit]')?.addEventListener('click', () => {
     let left = store.invoiceTotals(inv).balance, used = 0;

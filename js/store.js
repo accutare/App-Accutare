@@ -4,7 +4,9 @@ import { uid, today, addDays, round2, lineNet } from './utils.js';
 import * as L from './ledger.js';
 import { runRecurring } from './recurring.js';
 
-const KEY = 'accutare:v1';
+let KEY = 'accutare:v1';
+/** Local mode: each company is kept under its own storage key. */
+export function useLocalCompany(id) { KEY = id ? `accutare:v1:${id}` : 'accutare:v1'; }
 let state = null;
 const listeners = new Set();
 
@@ -496,6 +498,37 @@ export function parseBankCsv(text) {
     const amount = iAmt >= 0 ? num(r[iAmt]) : round2(num(r[iIn]) - Math.abs(num(r[iOut])));
     return { date: date(r[iDate]), description: (r[iDesc] ?? '').trim(), amount: round2(amount) };
   }).filter((t) => t.date && t.amount);
+}
+
+/** Generic CSV → array of objects keyed by lower-case header. */
+export function parseCsv(text) {
+  const rows = text.replace(/^\ufeff/, '').trim().split(/\r?\n/).map(parseCsvLine).filter((r) => r.some((c) => c.trim()));
+  if (!rows.length) return [];
+  const head = rows[0].map((h) => h.trim().toLowerCase());
+  return rows.slice(1).map((r) => Object.fromEntries(head.map((h, i) => [h, (r[i] ?? '').trim()])));
+}
+
+/** Import customers / vendors / products from a spreadsheet export. Returns how many were added. */
+export function importList(kind, text) {
+  const rows = parseCsv(text);
+  const pick = (r, ...names) => { for (const n of names) { const k = Object.keys(r).find((h) => h === n || h.includes(n)); if (k && r[k]) return r[k]; } return ''; };
+  const coll = { customers: 'customers', vendors: 'vendors', products: 'products' }[kind];
+  const existing = new Set(state[coll].map((x) => x.name.toLowerCase()));
+  let n = 0;
+  for (const r of rows) {
+    const name = pick(r, 'name', 'customer', 'supplier', 'vendor', 'company', 'product', 'item', 'display name');
+    if (!name || existing.has(name.toLowerCase())) continue;
+    existing.add(name.toLowerCase());
+    const address = pick(r, 'address', 'billing address', 'street') + ['city', 'town', 'postcode', 'post code', 'zip'].map((k) => (r[k] ? `\n${r[k]}` : '')).join('');
+    const rec = kind === 'products'
+      ? { name, description: pick(r, 'description', 'sales description'), price: Number(pick(r, 'price', 'rate', 'sales price').replace(/[£$€,]/g, '')) || 0,
+          vatRate: Number(pick(r, 'vat', 'tax').replace('%', '')) || state.company.vatRate, cost: Number(pick(r, 'cost', 'purchase cost').replace(/[£$€,]/g, '')) || 0 }
+      : { name, email: pick(r, 'email', 'e-mail'), phone: pick(r, 'phone', 'mobile', 'telephone'), address: address.trim(), notes: pick(r, 'notes', 'note') };
+    state[coll].push({ id: uid(), ...rec, createdAt: new Date().toISOString() });
+    n++;
+  }
+  if (n) { audit('created', coll, { name: `${n} imported from spreadsheet` }); save(); }
+  return n;
 }
 
 function parseCsvLine(line) {

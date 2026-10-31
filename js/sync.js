@@ -17,7 +17,9 @@ export const isOnline = () => !!me;
 export const canWrite = () => me && me.user.role !== 'viewer';
 
 export async function api(method, url, data) {
-  const r = await fetch(url, { method, cache: 'no-store', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  let company = '';
+  try { company = localStorage.getItem('accutare:company') || ''; } catch { /* ignore */ }
+  const r = await fetch(url, { method, cache: 'no-store', headers: { 'Content-Type': 'application/json', 'X-Company': company, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: data ? JSON.stringify(data) : undefined });
   const j = await r.json().catch(() => ({}));
   if (r.status === 401 && !url.endsWith('login')) { setToken(null); location.reload(); }
@@ -94,7 +96,7 @@ export async function loadIntoStore() {
   let hadLocal = false;
   try { hadLocal = !!localStorage.getItem('accutare:v1'); } catch { /* ignore */ }
   if (hadLocal && confirm('Upload the data already in this browser to your new company account?')) store.load();
-  else { store.reset(false); store.updateCompany({ name: me.signupCompany || me.company.name || 'My company', email: me.user.email }); }
+  else { store.reset(false); store.updateCompany({ name: me.company.name || me.signupCompany || 'My company', email: me.user.email }); }
   await push(true);
 }
 
@@ -126,10 +128,17 @@ async function poll() {
   if (r.status === 200 && !r.unchanged && r.data) { version = r.version; store.replaceState(r.data); }
 }
 
+export const companies = () => me?.companies || [];
+export function switchCompany(id) { try { localStorage.setItem('accutare:company', id); localStorage.removeItem('accutare:v1'); } catch { /* ignore */ } location.reload(); }
+export async function createCompany(name) {
+  const r = await api('POST', 'api/companies', { name });
+  if (r.id) { me.signupCompany = name; switchCompany(r.id); } else toast(r.error || 'Could not create company');
+}
+
 export async function signOut() {
   await push();
   await api('POST', 'api/logout');
   setToken(null);
-  try { localStorage.removeItem('accutare:v1'); } catch { /* ignore */ }
+  try { localStorage.removeItem('accutare:v1'); localStorage.removeItem('accutare:company'); } catch { /* ignore */ }
   location.reload();
 }

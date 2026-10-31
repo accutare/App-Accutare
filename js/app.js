@@ -3,6 +3,18 @@ import * as store from './store.js';
 import * as sync from './sync.js';
 import { icon } from './utils.js';
 import { toast } from './ui.js';
+import { mountSearch } from './search.js';
+
+/** Which screens each role can open (null = everything). */
+const ACCESS = {
+  sales: ['dashboard', 'invoices', 'estimates', 'receipts', 'credits', 'recurring', 'customers', 'products', 'statement', 'time', 'projects', 'settings'],
+  purchases: ['dashboard', 'bills', 'purchaseorders', 'vendorcredits', 'paybills', 'expenses', 'vendors', 'products', 'mileage', 'settings'],
+  standard: Object.keys({ dashboard: 1, banking: 1, invoices: 1, estimates: 1, receipts: 1, credits: 1, recurring: 1, customers: 1, products: 1, statement: 1, bills: 1, purchaseorders: 1,
+    vendorcredits: 1, paybills: 1, expenses: 1, vendors: 1, projects: 1, time: 1, mileage: 1, reports: 1, vat: 1, accounts: 1, assets: 1, budgets: 1, settings: 1 }),
+};
+const CREATE_ROUTE = { invoice: 'invoices', estimate: 'estimates', receipt: 'receipts', credit: 'credits', customer: 'customers', bill: 'bills', expense: 'expenses',
+  vendor: 'vendors', po: 'purchaseorders', vendorCredit: 'vendorcredits', time: 'time', trip: 'mileage', journal: 'accounts' };
+const allowed = (route) => { const role = sync.user()?.role; const list = role && ACCESS[role]; return !list || list.includes(route); };
 import * as dashboard from './views/dashboard.js';
 import * as invoices from './views/invoices.js';
 import * as customers from './views/customers.js';
@@ -106,11 +118,14 @@ function parseHash() {
 }
 
 function renderNav() {
-  const links = NAV.map(([k, label, ic]) => (k
+  const items = NAV.filter(([k]) => !k || allowed(k));
+  const visible = items.filter(([k], i) => k || (items[i + 1] && items[i + 1][0])); // drop empty group headings
+  const links = visible.map(([k, label, ic]) => (k
     ? `<a href="#/${k}" data-nav="${k}">${icon(ic)}<span>${label}</span></a>`
     : `<div class="nav-group">${label}</div>`)).join('');
   document.getElementById('sidenav').innerHTML = links;
-  document.getElementById('bottomnav').innerHTML = NAV.filter(([k]) => MOBILE_NAV.includes(k))
+  document.querySelectorAll('[data-create]').forEach((b) => { b.hidden = !allowed(CREATE_ROUTE[b.dataset.create]); });
+  document.getElementById('bottomnav').innerHTML = NAV.filter(([k]) => MOBILE_NAV.includes(k) && allowed(k))
     .map(([k, label, ic]) => `<a href="#/${k}" data-nav="${k}">${icon(ic)}<span>${label}</span></a>`).join('')
     + `<button type="button" data-more>${icon('menu')}<span>More</span></button>`;
   document.querySelector('[data-more]').addEventListener('click', () => document.body.classList.toggle('nav-open'));
@@ -126,6 +141,7 @@ function route() {
   document.getElementById('company-name').textContent = store.get().company.name;
   document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === name));
   document.body.classList.remove('nav-open');
+  if (!allowed(name)) { main.innerHTML = '<div class="empty"><p>Your role does not have access to this area. Ask the company owner or an admin.</p></div>'; return; }
   main.innerHTML = view.render({ id });
   // clickable table rows
   main.querySelectorAll('[data-href]').forEach((el) => el.addEventListener('click', () => { location.hash = el.dataset.href; }));
@@ -134,7 +150,45 @@ function route() {
 
 async function init() {
   const mode = await sync.start();
-  if (mode === 'online') { await sync.loadIntoStore(); sync.attach(); } else store.load();
+  let localCompanies = [];
+  if (mode === 'online') { await sync.loadIntoStore(); sync.attach(); } else {
+    try { localCompanies = JSON.parse(localStorage.getItem('accutare:companies') || '[]'); } catch { /* ignore */ }
+    let cur = '';
+    try { cur = localStorage.getItem('accutare:company-local') || ''; } catch { /* ignore */ }
+    store.useLocalCompany(cur);
+    store.load();
+    if (!localCompanies.length) localCompanies = [{ id: '', name: store.get().company.name }];
+    const me = localCompanies.find((c) => c.id === cur); if (me) me.name = store.get().company.name;
+    try { localStorage.setItem('accutare:companies', JSON.stringify(localCompanies)); } catch { /* ignore */ }
+  }
+  mountSearch(document.getElementById('search'));
+  // company switcher
+  const cn = document.getElementById('company-name');
+  cn.classList.add('company-switch');
+  cn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const list = mode === 'online' ? sync.companies().map((c) => ({ id: c.id, name: c.name })) : localCompanies;
+    const curId = mode === 'online' ? sync.company().id : (localStorage.getItem('accutare:company-local') || '');
+    const menu = document.getElementById('company-menu');
+    menu.innerHTML = `<small>Switch company</small>${list.map((c) => `<button data-co="${c.id}" class="${c.id === curId ? 'current' : ''}">${c.name || 'Company'}</button>`).join('')}<button data-co-new>+ Add a company</button>`;
+    menu.hidden = !menu.hidden;
+    menu.querySelectorAll('[data-co]').forEach((b) => b.addEventListener('click', () => {
+      if (b.dataset.co === curId) return;
+      if (mode === 'online') sync.switchCompany(b.dataset.co);
+      else { localStorage.setItem('accutare:company-local', b.dataset.co); location.reload(); }
+    }));
+    menu.querySelector('[data-co-new]').addEventListener('click', () => {
+      const name = prompt('New company name'); if (!name) return;
+      if (mode === 'online') return sync.createCompany(name);
+      const id = Math.random().toString(36).slice(2, 10);
+      localCompanies.push({ id, name });
+      localStorage.setItem('accutare:companies', JSON.stringify(localCompanies));
+      localStorage.setItem('accutare:company-local', id);
+      store.useLocalCompany(id); store.reset(false); store.updateCompany({ name });
+      location.reload();
+    });
+  });
+  document.addEventListener('click', () => { document.getElementById('company-menu').hidden = true; });
   renderNav();
   const who = document.getElementById('who');
   if (sync.isOnline()) {

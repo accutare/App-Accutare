@@ -1,5 +1,6 @@
 import * as store from '../store.js';
 import { money, esc, fmtDate, icon } from '../utils.js';
+import { attachmentsBox, mountAttachments } from '../files.js';
 import { openModal, closeModal, fields, readForm, toast, confirmDialog, emptyState, badge } from '../ui.js';
 
 export const title = 'Projects';
@@ -62,7 +63,7 @@ export function render(params) {
           <div class="right"><strong>${money(store.invoiceTotals(i).total, store.invoiceCurrency(i))}</strong>${badge(store.invoiceStatus(i))}</div></a></li>`).join('') || '<li class="muted">None yet</li>'}</ul></div>
         <div class="card"><h3>Costs</h3><ul class="list">${costs.map((c) => `<li><a href="${c.href}"><div><strong>${esc(c.label)}</strong><small>${fmtDate(c.date)}</small></div><strong>${money(c.amount, cur)}</strong></a></li>`).join('')
           || '<li class="muted">None yet</li>'}${time.length ? `<li><a href="#/time"><div><strong>Labour</strong><small>${x.hours} hours</small></div><strong>${money(x.labour, cur)}</strong></a></li>` : ''}</ul></div>
-      </div>`;
+      </div>${attachmentsBox(p)}`;
   }
   const rows = s.projects;
   return `<div class="toolbar"><span class="muted">Track income, costs and time per job.</span><button class="btn primary" data-new>${icon('plus')} New project</button></div>
@@ -77,5 +78,6 @@ export function mount(root, params, app) {
   if (!params.id) return;
   const p = store.find('projects', params.id);
   root.querySelector('[data-edit]')?.addEventListener('click', () => openProjectForm(p));
+  mountAttachments(root, 'projects', p.id);
   root.querySelector('[data-invoice]')?.addEventListener('click', () => app.quickCreate('invoice', { customerId: p.customerId, projectId: p.id }));
 }

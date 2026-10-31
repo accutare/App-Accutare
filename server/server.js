@@ -12,11 +12,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT || 8080);
 const DATA = path.resolve(process.env.DATA_DIR || path.join(ROOT, 'server', 'data'));
 const SESSION_DAYS = 30;
-const ROLES = ['owner', 'admin', 'standard', 'viewer', 'accountant'];
-const CAN_WRITE = new Set(['owner', 'admin', 'standard', 'accountant']);
+const ROLES = ['owner', 'admin', 'standard', 'accountant', 'sales', 'purchases', 'viewer'];
+const CAN_WRITE = new Set(['owner', 'admin', 'standard', 'accountant', 'sales', 'purchases']);
 const CAN_MANAGE_USERS = new Set(['owner', 'admin']);
 
 mkdirSync(path.join(DATA, 'companies'), { recursive: true });
+mkdirSync(path.join(DATA, 'files'), { recursive: true });
 
 // ---------- tiny JSON "database" with a write queue so concurrent requests don't clobber files ----------
 const queues = new Map();
@@ -44,7 +45,10 @@ async function verify(password, user) {
   const h = await hash(password, user.salt);
   return crypto.timingSafeEqual(Buffer.from(h, 'hex'), Buffer.from(user.hash, 'hex'));
 }
-const publicUser = (u) => ({ id: u.id, email: u.email, name: u.name, role: u.role, companyId: u.companyId });
+/** A user can belong to several companies, each with its own role. */
+const memberships = (u) => u.companies || [{ companyId: u.companyId, role: u.role }];
+const roleIn = (u, companyId) => memberships(u).find((m) => m.companyId === companyId)?.role;
+const publicUser = (u, companyId = memberships(u)[0].companyId) => ({ id: u.id, email: u.email, name: u.name, role: roleIn(u, companyId), companyId });
 const validEmail = (e) => typeof e === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 
 const attempts = new Map(); // ip -> [timestamps]  (basic brute-force protection)
@@ -71,7 +75,10 @@ async function auth(req) {
   const s = (await readJSON(SESSIONS, {}))[token];
   if (!s || s.expires < Date.now()) return null;
   const user = (await readJSON(USERS, [])).find((u) => u.id === s.userId && !u.disabled);
-  return user ? { user, token } : null;
+  if (!user) return null;
+  const wanted = req.headers['x-company'];
+  const m = memberships(user).find((x) => x.companyId === wanted && !x.disabled) || memberships(user).find((x) => !x.disabled);
+  return m ? { user, token, companyId: m.companyId, role: m.role } : null;
 }
 
 // ---------- HTTP plumbing ----------
@@ -116,7 +123,7 @@ const routes = {
     if (users.some((u) => u.email.toLowerCase() === email.toLowerCase())) return [409, { error: 'An account with this email already exists' }];
     const salt = crypto.randomBytes(16).toString('hex');
     const companyId = crypto.randomUUID();
-    const user = { id: crypto.randomUUID(), email: email.trim(), name: (name || '').trim(), role: 'owner', companyId, salt, hash: await hash(password, salt), createdAt: new Date().toISOString() };
+    const user = { id: crypto.randomUUID(), email: email.trim(), name: (name || '').trim(), role: 'owner', companyId, companies: [{ companyId, role: 'owner' }], salt, hash: await hash(password, salt), createdAt: new Date().toISOString() };
     users.push(user);
     await writeJSON(USERS, users);
     await writeJSON(companyFile(companyId), { version: 0, name: company || 'My company', data: null, updatedAt: null });
@@ -140,8 +147,9 @@ const routes = {
   },
 
   'GET /api/me': async (req, a) => {
-    const c = await readJSON(companyFile(a.user.companyId), {});
-    return [200, { user: publicUser(a.user), company: { id: a.user.companyId, name: c.name, version: c.version } }];
+    const c = await readJSON(companyFile(a.companyId), {});
+    const companies = await Promise.all(memberships(a.user).filter((m) => !m.disabled).map(async (m) => ({ id: m.companyId, role: m.role, name: (await readJSON(companyFile(m.companyId), {})).name })));
+    return [200, { user: publicUser(a.user, a.companyId), company: { id: a.companyId, name: c.name, version: c.version }, companies }];
   },
 
   'POST /api/password': async (req, a) => {
@@ -157,7 +165,7 @@ const routes = {
 
   // Company books. Optimistic concurrency: the client sends the version it edited.
   'GET /api/data': async (req, a) => {
-    const c = await readJSON(companyFile(a.user.companyId), null);
+    const c = await readJSON(companyFile(a.companyId), null);
     if (!c) return [404, { error: 'Company not found' }];
     const since = Number(new URL(req.url, 'http://x').searchParams.get('since'));
     if (since && since === c.version) return [200, { version: c.version, unchanged: true }];
@@ -165,10 +173,10 @@ const routes = {
   },
 
   'PUT /api/data': async (req, a) => {
-    if (!CAN_WRITE.has(a.user.role)) return [403, { error: 'Your role is read-only' }];
+    if (!CAN_WRITE.has(a.role)) return [403, { error: 'Your role is read-only' }];
     const { version, data } = await body(req);
     if (!data || typeof data !== 'object' || !data.company) return [400, { error: 'Invalid data' }];
-    const file = companyFile(a.user.companyId);
+    const file = companyFile(a.companyId);
     const c = await readJSON(file, null);
     if (!c) return [404, { error: 'Company not found' }];
     if (Number(version) !== c.version) return [409, { error: 'Changed by someone else', version: c.version, data: c.data, updatedBy: c.updatedBy }];
@@ -176,48 +184,93 @@ const routes = {
     await writeJSON(file, next);
     // keep a rolling daily backup
     const day = next.updatedAt.slice(0, 10);
-    const bdir = path.join(DATA, 'backups', a.user.companyId);
+    const bdir = path.join(DATA, 'backups', a.companyId);
     if (!existsSync(path.join(bdir, `${day}.json`))) { mkdirSync(bdir, { recursive: true }); await writeJSON(path.join(bdir, `${day}.json`), next); }
     return [200, { version: next.version }];
   },
 
+  'POST /api/companies': async (req, a) => {
+    const { name } = await body(req);
+    if (!name) return [400, { error: 'Company name is required' }];
+    const users = await readJSON(USERS, []);
+    const u = users.find((x) => x.id === a.user.id);
+    const companyId = crypto.randomUUID();
+    await writeJSON(companyFile(companyId), { version: 0, name, data: null, updatedAt: null });
+    u.companies = [...memberships(u), { companyId, role: 'owner' }];
+    await writeJSON(USERS, users);
+    return [201, { id: companyId, name }];
+  },
+
+  'POST /api/files': async (req, a) => {
+    if (!CAN_WRITE.has(a.role)) return [403, { error: 'Your role is read-only' }];
+    const { name, type, data } = await body(req, 12 * 1024 * 1024);
+    const buf = Buffer.from(String(data || ''), 'base64');
+    if (!buf.length || buf.length > 8 * 1024 * 1024) return [400, { error: 'File must be between 1 byte and 8 MB' }];
+    const id = crypto.randomUUID();
+    const dir = path.join(DATA, 'files', a.companyId);
+    mkdirSync(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, id), buf);
+    await writeJSON(path.join(dir, `${id}.json`), { name: String(name || 'file').slice(0, 200), type: String(type || 'application/octet-stream').slice(0, 100), size: buf.length });
+    return [201, { id }];
+  },
+
   'GET /api/users': async (req, a) => {
-    const users = (await readJSON(USERS, [])).filter((u) => u.companyId === a.user.companyId);
-    return [200, { users: users.map((u) => ({ ...publicUser(u), disabled: !!u.disabled })), canManage: CAN_MANAGE_USERS.has(a.user.role) }];
+    const users = (await readJSON(USERS, [])).filter((u) => roleIn(u, a.companyId));
+    return [200, { users: users.map((u) => ({ ...publicUser(u, a.companyId), disabled: !!memberships(u).find((m) => m.companyId === a.companyId)?.disabled })), canManage: CAN_MANAGE_USERS.has(a.role) }];
   },
 
   'POST /api/users': async (req, a) => {
-    if (!CAN_MANAGE_USERS.has(a.user.role)) return [403, { error: 'Only owners and admins can add users' }];
+    if (!CAN_MANAGE_USERS.has(a.role)) return [403, { error: 'Only owners and admins can add users' }];
     const { email, name, password, role } = await body(req);
     if (!validEmail(email)) return [400, { error: 'Enter a valid email' }];
-    if (!password || password.length < 8) return [400, { error: 'Temporary password must be at least 8 characters' }];
     if (!ROLES.includes(role) || role === 'owner') return [400, { error: 'Invalid role' }];
     const users = await readJSON(USERS, []);
-    if (users.some((u) => u.email.toLowerCase() === email.toLowerCase())) return [409, { error: 'That email is already in use' }];
+    const ex = users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+    if (ex) {
+      if (roleIn(ex, a.companyId)) return [409, { error: 'That person is already in this company' }];
+      ex.companies = [...memberships(ex), { companyId: a.companyId, role }];
+      await writeJSON(USERS, users);
+      return [201, { user: publicUser(ex, a.companyId), existing: true }];
+    }
+    if (!password || password.length < 8) return [400, { error: 'Temporary password must be at least 8 characters' }];
     const salt = crypto.randomBytes(16).toString('hex');
-    const u = { id: crypto.randomUUID(), email, name: name || '', role, companyId: a.user.companyId, salt, hash: await hash(password, salt), createdAt: new Date().toISOString() };
+    const u = { id: crypto.randomUUID(), email, name: name || '', role, companyId: a.companyId, companies: [{ companyId: a.companyId, role }], salt, hash: await hash(password, salt), createdAt: new Date().toISOString() };
     users.push(u);
     await writeJSON(USERS, users);
     return [201, { user: publicUser(u) }];
   },
 
   'PATCH /api/users': async (req, a) => {
-    if (!CAN_MANAGE_USERS.has(a.user.role)) return [403, { error: 'Not allowed' }];
+    if (!CAN_MANAGE_USERS.has(a.role)) return [403, { error: 'Not allowed' }];
     const { id, role, disabled } = await body(req);
     const users = await readJSON(USERS, []);
-    const u = users.find((x) => x.id === id && x.companyId === a.user.companyId);
+    const u = users.find((x) => x.id === id && roleIn(x, a.companyId));
     if (!u) return [404, { error: 'User not found' }];
-    if (u.role === 'owner') return [400, { error: "The owner can't be changed" }];
-    if (role !== undefined) { if (!ROLES.includes(role) || role === 'owner') return [400, { error: 'Invalid role' }]; u.role = role; }
-    if (disabled !== undefined) u.disabled = !!disabled;
+    u.companies = memberships(u);
+    const m = u.companies.find((x) => x.companyId === a.companyId);
+    if (m.role === 'owner') return [400, { error: "The owner can't be changed" }];
+    if (role !== undefined) { if (!ROLES.includes(role) || role === 'owner') return [400, { error: 'Invalid role' }]; m.role = role; }
+    if (disabled !== undefined) m.disabled = !!disabled;
     await writeJSON(USERS, users);
-    return [200, { user: publicUser(u) }];
+    return [200, { user: publicUser(u, a.companyId) }];
   },
 };
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (!url.pathname.startsWith('/api/')) return serveStatic(req, res);
+  const fileMatch = req.method === 'GET' && url.pathname.match(/^\/api\/files\/([0-9a-f-]{36})$/);
+  if (fileMatch) {
+    const a = await auth(req);
+    if (!a) return send(res, 401, { error: 'Please sign in' });
+    const dir = path.join(DATA, 'files', a.companyId);
+    const meta = await readJSON(path.join(dir, `${fileMatch[1]}.json`), null);
+    if (!meta) return send(res, 404, { error: 'Not found' });
+    const safeType = /^(image\/(png|jpeg|gif|webp)|application\/pdf)$/.test(meta.type) ? meta.type : 'application/octet-stream';
+    res.writeHead(200, { 'Content-Type': safeType, 'Content-Disposition': `${safeType === 'application/octet-stream' ? 'attachment' : 'inline'}; filename="${encodeURIComponent(meta.name)}"`,
+      'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=3600', 'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'" });
+    return res.end(await fs.readFile(path.join(dir, fileMatch[1])));
+  }
   const handler = routes[`${req.method} ${url.pathname}`];
   if (!handler) return send(res, 404, { error: 'Not found' });
   try {
