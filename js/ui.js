@@ -75,7 +75,8 @@ export function readForm(form) {
   return out;
 }
 
-const STATUS_LABEL = { draft: 'Draft', open: 'Open', partial: 'Partially paid', overdue: 'Overdue', paid: 'Paid' };
+const STATUS_LABEL = { draft: 'Draft', open: 'Open', partial: 'Partially paid', overdue: 'Overdue', paid: 'Paid',
+  pending: 'Pending', accepted: 'Accepted', declined: 'Declined', converted: 'Invoiced', expired: 'Expired' };
 export const badge = (status) => `<span class="badge badge-${status}">${STATUS_LABEL[status] || status}</span>`;
 
 export const emptyState = (text, actionHtml = '') =>

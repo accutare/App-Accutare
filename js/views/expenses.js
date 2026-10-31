@@ -29,6 +29,7 @@ export function openExpenseForm(existing) {
         form.elements.vat.value = round2(gross - gross / (1 + co.vatRate / 100)).toFixed(2);
       });
       form.querySelector('[data-delete]')?.addEventListener('click', () => {
+        if (existing.bankTxnId) return toast('This came from the bank feed — undo it in Banking');
         if (confirmDialog('Delete this expense?')) { store.remove('expenses', existing.id); closeModal(); toast('Expense deleted'); }
       });
       form.addEventListener('submit', (e) => {

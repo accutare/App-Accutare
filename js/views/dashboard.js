@@ -20,8 +20,8 @@ function chart(months, cur) {
   const data = months.map((m) => {
     const income = s.invoices.filter((i) => !i.draft && monthKey(i.date) === m)
       .reduce((a, i) => a + store.invoiceTotals(i).subtotal, 0);
-    const expense = s.expenses.filter((e) => monthKey(e.date) === m)
-      .reduce((a, e) => a + store.expenseNet(e), 0);
+    const expense = store.costEntries().filter((e) => monthKey(e.date) === m)
+      .reduce((a, e) => a + e.net, 0);
     return { m, income, expense };
   });
   const max = Math.max(1, ...data.flatMap((d) => [d.income, d.expense]));
@@ -49,10 +49,14 @@ export function render() {
   const open = live.filter((i) => store.invoiceTotals(i).balance > 0);
   const overdue = open.filter((i) => store.invoiceStatus(i) === 'overdue');
   const sum = (list) => list.reduce((a, i) => a + store.invoiceTotals(i).balance, 0);
+  const billsDue = s.bills.reduce((a, b) => a + store.billTotals(b).balance, 0);
+  const toReview = s.bankTransactions.filter((t) => t.status === 'new').length;
   const recent = [...s.invoices].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
 
   return `
     <section class="kpis">
+      <a class="card kpi" href="#/banking"><span>Bank balance${toReview ? ` · ${toReview} to review` : ''}</span><strong>${money(store.bankBalance(), cur)}</strong></a>
+      <a class="card kpi" href="#/bills"><span>Bills to pay</span><strong>${money(billsDue, cur)}</strong></a>
       <div class="card kpi"><span>Income (YTD)</span><strong>${money(pl.income, cur)}</strong></div>
       <div class="card kpi"><span>Expenses (YTD)</span><strong>${money(pl.totalExpenses, cur)}</strong></div>
       <div class="card kpi"><span>Net profit (YTD)</span><strong class="${pl.net < 0 ? 'neg' : 'pos'}">${money(pl.net, cur)}</strong></div>

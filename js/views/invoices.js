@@ -23,11 +23,17 @@ function lineRow(l, products) {
   </tr>`;
 }
 
-export function openInvoiceForm(existing, preset = {}) {
+const KINDS = {
+  invoice: { coll: 'invoices', counter: 'nextInvoiceNumber', label: 'Invoice', due: 'Due date' },
+  estimate: { coll: 'estimates', counter: 'nextEstimateNumber', label: 'Estimate', due: 'Expiry date' },
+};
+
+export function openInvoiceForm(existing, preset = {}, kind = 'invoice') {
+  const K = KINDS[kind];
   const s = store.get();
   const co = s.company;
   const inv = existing ? structuredClone(existing) : {
-    number: String(co.nextInvoiceNumber), customerId: preset.customerId || s.customers[0]?.id || '',
+    number: String(co[K.counter]), customerId: preset.customerId || s.customers[0]?.id || '',
     date: today(), dueDate: addDays(today(), co.paymentTerms), notes: 'Thank you for your business.',
     lines: [{ productId: '', description: '', qty: 1, price: 0, vatRate: co.vatRate }], payments: [], draft: false,
   };
@@ -36,9 +42,9 @@ export function openInvoiceForm(existing, preset = {}) {
   const body = `<form class="invoice-form">
     ${fields([
       { name: 'customerId', label: 'Customer', type: 'select', required: true, options: [['', 'Select a customer…'], ...customers.map((c) => [c.id, c.name])] },
-      { name: 'number', label: 'Invoice no.', required: true },
-      { name: 'date', label: 'Invoice date', type: 'date', required: true },
-      { name: 'dueDate', label: 'Due date', type: 'date', required: true },
+      { name: 'number', label: `${K.label} no.`, required: true },
+      { name: 'date', label: `${K.label} date`, type: 'date', required: true },
+      { name: 'dueDate', label: K.due, type: 'date', required: true },
     ], inv)}
     <button type="button" class="link-btn" data-add-customer>+ Add new customer</button>
     <div class="table-scroll"><table class="table lines">
@@ -52,12 +58,12 @@ export function openInvoiceForm(existing, preset = {}) {
     </div>
     <footer class="modal-foot">
       <button type="button" class="btn ghost" data-close>Cancel</button>
-      <button type="submit" class="btn" name="mode" value="draft">Save as draft</button>
-      <button type="submit" class="btn primary" name="mode" value="final">Save invoice</button>
+      ${kind === 'invoice' ? '<button type="submit" class="btn" name="mode" value="draft">Save as draft</button>' : ''}
+      <button type="submit" class="btn primary" name="mode" value="final">Save ${K.label.toLowerCase()}</button>
     </footer></form>`;
 
   openModal({
-    title: existing ? `Edit invoice #${existing.number}` : 'New invoice', body, wide: true,
+    title: existing ? `Edit ${K.label.toLowerCase()} #${existing.number}` : `New ${K.label.toLowerCase()}`, body, wide: true,
     onMount(m) {
       const form = m.querySelector('form');
       const tbody = form.querySelector('.lines tbody');
@@ -99,7 +105,7 @@ export function openInvoiceForm(existing, preset = {}) {
       });
       form.querySelector('[data-add-customer]').addEventListener('click', () => {
         const draft = { ...inv, ...readForm(form), lines: readLines() };
-        openCustomerForm(null, (c) => openInvoiceForm(existing ? { ...existing, ...draft, customerId: c.id } : null, { ...draft, customerId: c.id }));
+        openCustomerForm(null, (c) => openInvoiceForm(existing ? { ...existing, ...draft, customerId: c.id } : null, { ...draft, customerId: c.id }, kind));
       });
       // restore a draft passed through preset (after adding a customer)
       if (!existing && preset.lines) {
@@ -117,13 +123,13 @@ export function openInvoiceForm(existing, preset = {}) {
         const lines = readLines().filter((l) => l.description || l.price);
         if (!lines.length) return toast('Add at least one line');
         const isNew = !existing;
-        const saved = store.upsert('invoices', {
+        const saved = store.upsert(K.coll, {
           ...inv, ...data, lines, draft: e.submitter?.value === 'draft',
         });
-        if (isNew && Number(saved.number) >= co.nextInvoiceNumber) store.updateCompany({ nextInvoiceNumber: Number(saved.number) + 1 });
+        if (isNew && Number(saved.number) >= co[K.counter]) store.updateCompany({ [K.counter]: Number(saved.number) + 1 });
         closeModal();
-        toast('Invoice saved');
-        location.hash = `#/invoices/${saved.id}`;
+        toast(`${K.label} saved`);
+        location.hash = `#/${K.coll}/${saved.id}`;
       });
       recalc();
     },
@@ -221,7 +227,7 @@ function renderDetail(id) {
     </article>
     ${(inv.payments || []).length ? `<div class="card no-print"><h3>Payments</h3><ul class="list">${inv.payments.map((p) => `
       <li><div><strong>${money(p.amount, cur)}</strong><small>${fmtDate(p.date)} · ${esc(p.method)}</small></div>
-      <button class="icon-btn" data-del-payment="${p.id}" aria-label="Delete payment">${icon('trash', 16)}</button></li>`).join('')}</ul></div>` : ''}`;
+      ${p.bankTxnId ? '<small class="muted">From bank</small>' : `<button class="icon-btn" data-del-payment="${p.id}" aria-label="Delete payment">${icon('trash', 16)}</button>`}</li>`).join('')}</ul></div>` : ''}`;
 }
 
 export function mount(root, params) {
@@ -238,6 +244,7 @@ export function mount(root, params) {
   root.querySelector('[data-print]').addEventListener('click', () => window.print());
   root.querySelector('[data-pay]')?.addEventListener('click', () => openPaymentForm(inv));
   root.querySelector('[data-delete]').addEventListener('click', () => {
+    if ((inv.payments || []).some((p) => p.bankTxnId)) return toast('Undo the bank match first (Banking → Categorised)');
     if (confirmDialog(`Delete invoice #${inv.number}?`)) { store.remove('invoices', inv.id); location.hash = '#/invoices'; }
   });
   root.querySelectorAll('[data-del-payment]').forEach((b) => b.addEventListener('click', () => {

@@ -24,9 +24,14 @@
         <div class="new-wrap">
           <button id="new-btn" class="btn primary"></button>
           <div id="new-menu" class="menu" hidden>
+            <small>Customers</small>
             <button data-create="invoice">Invoice</button>
-            <button data-create="expense">Expense</button>
+            <button data-create="estimate">Estimate</button>
             <button data-create="customer">Customer</button>
+            <small>Suppliers</small>
+            <button data-create="bill">Bill</button>
+            <button data-create="expense">Expense</button>
+            <button data-create="vendor">Supplier</button>
           </div>
         </div>
       </header>
@@ -34,6 +39,7 @@
     </div>
   </div>
   <nav id="bottomnav" class="bottomnav no-print"></nav>
+  <div class="nav-scrim no-print" onclick="document.body.classList.remove('nav-open')"></div>
   <div id="modal-root"></div>
   <script type="module" src="js/app.js"></script>
 </body>

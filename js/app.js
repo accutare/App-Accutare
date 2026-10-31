@@ -8,18 +8,29 @@ import * as expenses from './views/expenses.js';
 import * as products from './views/products.js';
 import * as reports from './views/reports.js';
 import * as settings from './views/settings.js';
+import * as banking from './views/banking.js';
+import * as estimates from './views/estimates.js';
+import * as bills from './views/bills.js';
+import * as vendors from './views/vendors.js';
 
-const ROUTES = { dashboard, invoices, customers, expenses, products, reports, settings };
+const ROUTES = { dashboard, banking, invoices, estimates, customers, bills, vendors, expenses, products, reports, settings };
 const NAV = [
   ['dashboard', 'Dashboard', 'dashboard'],
+  ['banking', 'Banking', 'bank'],
+  ['', 'Sales', null],
   ['invoices', 'Invoices', 'invoice'],
+  ['estimates', 'Estimates', 'estimate'],
   ['customers', 'Customers', 'customers'],
+  ['', 'Purchases', null],
+  ['bills', 'Bills', 'bill'],
   ['expenses', 'Expenses', 'expenses'],
+  ['vendors', 'Suppliers', 'vendors'],
+  ['', 'Business', null],
   ['products', 'Products', 'products'],
   ['reports', 'Reports', 'reports'],
   ['settings', 'Settings', 'settings'],
 ];
-const MOBILE_NAV = ['dashboard', 'invoices', 'expenses', 'reports'];
+const MOBILE_NAV = ['dashboard', 'banking', 'invoices', 'bills'];
 
 const app = {
   rerender: () => route(),
@@ -30,6 +41,12 @@ const app = {
     }
     if (kind === 'expense') expenses.openExpenseForm();
     if (kind === 'customer') customers.openCustomerForm();
+    if (kind === 'estimate') {
+      if (!store.get().customers.length) return customers.openCustomerForm(null, () => estimates.openEstimateForm());
+      estimates.openEstimateForm(null, preset);
+    }
+    if (kind === 'bill') bills.openBillForm(null, preset);
+    if (kind === 'vendor') vendors.openVendorForm();
   },
 };
 
@@ -39,12 +56,14 @@ function parseHash() {
 }
 
 function renderNav() {
-  const links = NAV.map(([k, label, ic]) =>
-    `<a href="#/${k}" data-nav="${k}">${icon(ic)}<span>${label}</span></a>`).join('');
+  const links = NAV.map(([k, label, ic]) => (k
+    ? `<a href="#/${k}" data-nav="${k}">${icon(ic)}<span>${label}</span></a>`
+    : `<div class="nav-group">${label}</div>`)).join('');
   document.getElementById('sidenav').innerHTML = links;
   document.getElementById('bottomnav').innerHTML = NAV.filter(([k]) => MOBILE_NAV.includes(k))
     .map(([k, label, ic]) => `<a href="#/${k}" data-nav="${k}">${icon(ic)}<span>${label}</span></a>`).join('')
-    + `<a href="#/settings" data-nav="settings">${icon('settings')}<span>More</span></a>`;
+    + `<button type="button" data-more>${icon('menu')}<span>More</span></button>`;
+  document.querySelector('[data-more]').addEventListener('click', () => document.body.classList.toggle('nav-open'));
   document.getElementById('company-name').textContent = store.get().company.name;
 }
 
@@ -56,6 +75,7 @@ function route() {
   document.title = `${view.title} · Accutare`;
   document.getElementById('company-name').textContent = store.get().company.name;
   document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === name));
+  document.body.classList.remove('nav-open');
   main.innerHTML = view.render({ id });
   // clickable table rows
   main.querySelectorAll('[data-href]').forEach((el) => el.addEventListener('click', () => { location.hash = el.dataset.href; }));

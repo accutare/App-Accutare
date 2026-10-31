@@ -18,6 +18,9 @@ export function render() {
         { name: 'vatRate', label: 'Default VAT %', type: 'number', step: 'any' },
         { name: 'paymentTerms', label: 'Payment terms (days)', type: 'number' },
         { name: 'nextInvoiceNumber', label: 'Next invoice number', type: 'number' },
+        { name: 'nextEstimateNumber', label: 'Next estimate number', type: 'number' },
+        { name: 'bankName', label: 'Bank account name' },
+        { name: 'openingBalance', label: 'Bank opening balance', type: 'number', step: '0.01' },
       ], co)}
       <footer class="modal-foot"><button class="btn primary">Save settings</button></footer>
     </form>

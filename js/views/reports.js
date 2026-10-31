@@ -46,7 +46,7 @@ export function render() {
         <table class="table">
           <tbody>
             <tr class="section"><td>Income</td><td></td></tr>
-            <tr><td class="indent">Sales</td><td class="num">${money(pl.income, cur)}</td></tr>
+            ${Object.entries(pl.incomeByCategory).map(([c, v]) => `<tr><td class="indent">${esc(c)}</td><td class="num">${money(v, cur)}</td></tr>`).join('')}
             <tr class="subtotal"><td>Total income</td><td class="num">${money(pl.income, cur)}</td></tr>
             <tr class="section"><td>Expenses</td><td></td></tr>
             ${cats.map(([c, v]) => `<tr><td class="indent">${esc(c)}</td><td class="num">${money(v, cur)}</td></tr>`).join('') || '<tr><td class="indent muted">None</td><td></td></tr>'}
