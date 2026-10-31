@@ -3,6 +3,7 @@ import * as L from '../ledger.js';
 import { depreciationSchedule } from '../ledger.js';
 import { budgetMonths } from './budgets.js';
 import { money, today, esc, icon, fmtDate, round2, addDays, lineNet } from '../utils.js';
+import { toast } from '../ui.js';
 
 export const title = 'Reports';
 
@@ -24,6 +25,15 @@ const PERIODS = {
 };
 let period = 'this-year';
 let range = PERIODS[period]();
+let compare = 'none'; // none | prev-period | prev-year
+let project = '';
+function compareRange() {
+  if (compare === 'none') return null;
+  if (compare === 'prev-year') return range.map((d) => `${Number(d.slice(0, 4)) - 1}${d.slice(4)}`);
+  const days = Math.round((new Date(range[1]) - new Date(range[0])) / 86400000) + 1;
+  return [addDays(range[0], -days), addDays(range[0], -1)];
+}
+const COMPARABLE = ['pl', 'bs'];
 
 const CATALOG = [
   ['Business overview', [['pl', 'Profit and loss'], ['bs', 'Balance sheet'], ['cf', 'Statement of cash flows'], ['pl-month', 'Profit and loss by month'], ['projects', 'Project profitability']]],
@@ -55,16 +65,26 @@ function ageing(items) {
 
 const REPORTS = {
   pl() {
-    const p = store.profitAndLoss(range[0], range[1]);
-    const sect = (title, rows) => rows.length ? `<tr class="section"><td>${title}</td><td></td></tr>${rows.map((r) => `<tr data-href="#/accounts/${r.account.id}"><td class="indent">${esc(r.account.name)}</td><td class="num">${m(r.amount)}</td></tr>`).join('')}` : '';
-    const s = (rows) => round2(rows.reduce((a, r) => a + r.amount, 0));
-    return `<table class="table report-table"><tbody>
-      ${sect('Income', p.income)}${tr('Total income', s(p.income), 'subtotal')}
-      ${sect('Cost of sales', p.cos)}${p.cos.length ? tr('Total cost of sales', s(p.cos), 'subtotal') : ''}
-      ${tr('Gross profit', p.grossProfit, 'grand')}
-      ${sect('Expenses', p.expenses)}${tr('Total expenses', s(p.expenses), 'subtotal')}
-      ${sect('Other income', p.otherIncome)}
-      ${tr('Net profit', p.net, 'grand')}</tbody></table><p class="muted small">Accrual basis, excluding VAT.</p>`;
+    const s = store.get();
+    const entries = project ? store.journal().filter((e) => e.source.projectId === project) : store.journal();
+    const cols = [{ label: `${fmtDate(range[0])} – ${fmtDate(range[1])}`, p: L.profitAndLoss(s.accounts, entries, range[0], range[1]) }];
+    const cr = compareRange();
+    if (cr) cols.push({ label: `${fmtDate(cr[0])} – ${fmtDate(cr[1])}`, p: L.profitAndLoss(s.accounts, entries, cr[0], cr[1]) });
+    const amt = (p, key, id) => p[key].find((r) => r.account.id === id)?.amount || 0;
+    const sum = (p, key) => round2(p[key].reduce((a, r) => a + r.amount, 0));
+    const ids = (key) => [...new Set(cols.flatMap((c) => c.p[key].map((r) => r.account.id)))];
+    const cells = (vals) => vals.map((v) => `<td class="num">${m(v)}</td>`).join('') + (cr ? `<td class="num muted">${m(vals[0] - vals[1])}</td>` : '');
+    const line = (label, vals, cls = '', href = '') => `<tr class="${cls}" ${href ? `data-href="${href}"` : ''}><td>${label}</td>${cells(vals)}</tr>`;
+    const sect = (title, key) => ids(key).length ? `<tr class="section"><td colspan="${cols.length + (cr ? 2 : 1)}">${title}</td></tr>` +
+      ids(key).map((id) => line(`<span class="indent-in">${esc(store.find('accounts', id).name)}</span>`, cols.map((c) => amt(c.p, key, id)), '', `#/accounts/${id}`)).join('') : '';
+    return `${project ? `<p class="muted">Project: ${esc(store.find('projects', project)?.name)}</p>` : ''}<table class="table report-table">
+      ${cols.length > 1 ? `<thead><tr><th></th>${cols.map((c) => `<th class="num">${c.label}</th>`).join('')}<th class="num">Change</th></tr></thead>` : ''}<tbody>
+      ${sect('Income', 'income')}${line('Total income', cols.map((c) => sum(c.p, 'income')), 'subtotal')}
+      ${sect('Cost of sales', 'cos')}${ids('cos').length ? line('Total cost of sales', cols.map((c) => sum(c.p, 'cos')), 'subtotal') : ''}
+      ${line('Gross profit', cols.map((c) => c.p.grossProfit), 'grand')}
+      ${sect('Expenses', 'expenses')}${line('Total expenses', cols.map((c) => sum(c.p, 'expenses')), 'subtotal')}
+      ${sect('Other income', 'otherIncome')}
+      ${line('Net profit', cols.map((c) => c.p.net), 'grand')}</tbody></table><p class="muted small">Accrual basis, excluding VAT.</p>`;
   },
   'pl-month'() {
     const months = [];
@@ -78,16 +98,21 @@ const REPORTS = {
   },
   bs() {
     const s = store.get();
-    const b = L.balanceSheet(s.accounts, store.journal(), range[1], fyStart());
-    const lines = (rows) => rows.map((r) => `<tr data-href="#/accounts/${r.account.id}"><td class="indent">${esc(r.account.name)}</td><td class="num">${m(r.amount)}</td></tr>`).join('');
-    return `<p class="muted">As of ${fmtDate(range[1])}</p><table class="table report-table"><tbody>
-      <tr class="section"><td>Assets</td><td></td></tr>${lines(b.assets)}${tr('Total assets', b.totalAssets, 'grand')}
-      <tr class="section"><td>Liabilities</td><td></td></tr>${lines(b.liabilities)}${tr('Total liabilities', b.totalLiabilities, 'subtotal')}
-      <tr class="section"><td>Equity</td><td></td></tr>${lines(b.equity)}
-      ${tr('<span class="indent-in">Retained earnings</span>', b.priorEarnings)}${tr('<span class="indent-in">Profit for the year</span>', b.currentEarnings)}
-      ${tr('Total equity', b.totalEquity, 'subtotal')}
-      ${tr('Total liabilities and equity', round2(b.totalLiabilities + b.totalEquity), 'grand')}
-    </tbody></table>${b.balanced ? '' : '<p class="neg">Warning: balance sheet does not balance.</p>'}`;
+    const dates = [range[1]];
+    if (compare !== 'none') dates.push(compare === 'prev-year' ? `${Number(range[1].slice(0, 4)) - 1}${range[1].slice(4)}` : addDays(range[0], -1));
+    const fy = (d) => { const co = s.company; const st = `${d.slice(0, 4)}-${String(co.fyStartMonth || 1).padStart(2, '0')}-${String(co.fyStartDay || 1).padStart(2, '0')}`; return d >= st ? st : `${Number(d.slice(0, 4)) - 1}${st.slice(4)}`; };
+    const bs = dates.map((d) => L.balanceSheet(s.accounts, store.journal(), d, fy(d)));
+    const ids = (key) => [...new Set(bs.flatMap((b) => b[key].map((r) => r.account.id)))];
+    const val = (b, key, id) => b[key].find((r) => r.account.id === id)?.amount || 0;
+    const line = (label, vals, cls = '', href = '') => `<tr class="${cls}" ${href ? `data-href="${href}"` : ''}><td>${label}</td>${vals.map((v) => `<td class="num">${m(v)}</td>`).join('')}</tr>`;
+    const sect = (title, key) => `<tr class="section"><td colspan="${dates.length + 1}">${title}</td></tr>` + ids(key).map((id) => line(`<span class="indent-in">${esc(store.find('accounts', id).name)}</span>`, bs.map((b) => val(b, key, id)), '', `#/accounts/${id}`)).join('');
+    return `<table class="table report-table"><thead><tr><th></th>${dates.map((d) => `<th class="num">As of ${fmtDate(d)}</th>`).join('')}</tr></thead><tbody>
+      ${sect('Assets', 'assets')}${line('Total assets', bs.map((b) => b.totalAssets), 'grand')}
+      ${sect('Liabilities', 'liabilities')}${line('Total liabilities', bs.map((b) => b.totalLiabilities), 'subtotal')}
+      ${sect('Equity', 'equity')}${line('<span class="indent-in">Retained earnings</span>', bs.map((b) => b.priorEarnings))}${line('<span class="indent-in">Profit for the year</span>', bs.map((b) => b.currentEarnings))}
+      ${line('Total equity', bs.map((b) => b.totalEquity), 'subtotal')}
+      ${line('Total liabilities and equity', bs.map((b) => round2(b.totalLiabilities + b.totalEquity)), 'grand')}
+    </tbody></table>${bs.every((b) => b.balanced) ? '' : '<p class="neg">Warning: balance sheet does not balance.</p>'}`;
   },
   cf() {
     const s = store.get();
@@ -255,7 +280,8 @@ const REPORTS = {
 
 export function render(params) {
   if (!params.id) {
-    return `<div class="report-catalog">${CATALOG.map(([g, items]) => `<div class="card"><h3>${g}</h3><ul class="link-list">
+    const saved = store.get().company.savedReports || [];
+    return `<div class="report-catalog">${saved.length ? `<div class="card"><h3>Saved reports</h3><ul class="link-list">${saved.map((r, i) => `<li class="saved-row"><a href="#/reports/${r.report}" data-load="${i}">${esc(r.name)}</a><button class="icon-btn" data-unsave="${i}" aria-label="Remove">${icon('trash', 14)}</button></li>`).join('')}</ul></div>` : ''}${CATALOG.map(([g, items]) => `<div class="card"><h3>${g}</h3><ul class="link-list">
       ${items.map(([k, l]) => `<li><a href="#/reports/${k}">${l}</a></li>`).join('')}</ul></div>`).join('')}</div>`;
   }
   const fn = REPORTS[params.id];
@@ -267,16 +293,32 @@ export function render(params) {
         <select data-period>${[['this-month', 'This month'], ['last-month', 'Last month'], ['this-quarter', 'This quarter'], ['this-year', 'This calendar year'], ['financial-year', 'This financial year'], ['tax-year', 'UK tax year'], ['last-year', 'Last year'], ['custom', 'Custom']]
           .map(([k, l]) => `<option value="${k}" ${k === period ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <input type="date" data-from value="${range[0]}"> <span>to</span> <input type="date" data-to value="${range[1]}">
+        ${COMPARABLE.includes(params.id) ? `<select data-compare>${[['none', 'No comparison'], ['prev-period', 'vs previous period'], ['prev-year', 'vs same period last year']].map(([k, l]) => `<option value="${k}" ${k === compare ? 'selected' : ''}>${l}</option>`).join('')}</select>` : ''}
+        ${params.id === 'pl' && store.get().projects.length ? `<select data-project><option value="">All projects</option>${store.get().projects.map((p) => `<option value="${p.id}" ${p.id === project ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : ''}
       </div>
-      <div class="actions"><button class="btn" data-csv>Export CSV</button><button class="btn" onclick="window.print()">${icon('print', 16)} Print</button></div>
+      <div class="actions"><button class="btn" data-save-report>Save</button><button class="btn" data-csv>Export CSV</button><button class="btn" onclick="window.print()">${icon('print', 16)} Print</button></div>
     </div>
     <div class="card report"><header class="report-head"><strong>${esc(co.name)}</strong><h2>${NAMES[params.id]}</h2>
       <span class="muted">${fmtDate(range[0])} – ${fmtDate(range[1])}</span></header>${fn()}</div>`;
 }
 
 export function mount(root, params, app) {
+  const saved = () => store.get().company.savedReports || [];
+  root.querySelectorAll('[data-load]').forEach((a) => a.addEventListener('click', () => {
+    const r = saved()[Number(a.dataset.load)];
+    period = r.period; range = PERIODS[r.period] ? PERIODS[r.period]() : [r.from, r.to]; compare = r.compare || 'none'; project = r.project || '';
+  }));
+  root.querySelectorAll('[data-unsave]').forEach((b) => b.addEventListener('click', () => store.updateCompany({ savedReports: saved().filter((_, i) => i !== Number(b.dataset.unsave)) })));
   const sel = root.querySelector('[data-period]');
   if (!sel) return;
+  root.querySelector('[data-compare]')?.addEventListener('change', (e) => { compare = e.target.value; app.rerender(); });
+  root.querySelector('[data-project]')?.addEventListener('change', (e) => { project = e.target.value; app.rerender(); });
+  root.querySelector('[data-save-report]').addEventListener('click', () => {
+    const name = prompt('Name this report', `${NAMES[params.id]}${compare !== 'none' ? ' (comparison)' : ''}`);
+    if (!name) return;
+    store.updateCompany({ savedReports: [...saved(), { name, report: params.id, period, from: range[0], to: range[1], compare, project }] });
+    toast('Report saved — find it at the top of Reports');
+  });
   const from = root.querySelector('[data-from]'), to = root.querySelector('[data-to]');
   sel.addEventListener('change', () => { period = sel.value; if (PERIODS[period]) range = PERIODS[period](); app.rerender(); });
   const custom = () => { period = 'custom'; range = [from.value, to.value]; app.rerender(); };

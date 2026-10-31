@@ -107,7 +107,7 @@ function build(s) {
     for (const l of inv.lines) { const n = lineNet(l); net += n; vat += round2(n * (l.vatRate || 0) / 100); }
     net = round2(net * rate); vat = round2(vat * rate);
     const cust = s.customers.find((c) => c.id === inv.customerId)?.name || '';
-    add(inv.date, { type: 'invoice', id: inv.id }, `Invoice #${inv.number} · ${cust}`, [
+    add(inv.date, { type: 'invoice', id: inv.id, projectId: inv.projectId }, `Invoice #${inv.number} · ${cust}`, [
       { accountId: AR, debit: net + vat },
       { accountId: bySystem('sales'), credit: net },
       { accountId: VAT, credit: vat },
@@ -155,7 +155,7 @@ function build(s) {
       total += net + vat;
       lines.push({ accountId: byName(l.category, 'other_expense'), debit: net, memo: l.description }, { accountId: VAT, debit: vat });
     }
-    add(b.date, { type: 'bill', id: b.id }, `Bill ${b.number || ''} · ${vend}`, [...lines, { accountId: AP, credit: round2(total) }]);
+    add(b.date, { type: 'bill', id: b.id, projectId: b.projectId }, `Bill ${b.number || ''} · ${vend}`, [...lines, { accountId: AP, credit: round2(total) }]);
     for (const p of b.payments || []) {
       if (p.vendorCreditId) continue;
       add(p.date, { type: 'bill', id: b.id }, `Bill payment · ${vend}`, [{ accountId: AP, debit: p.amount }, { accountId: payAccount(p), credit: p.amount }]);
@@ -176,7 +176,7 @@ function build(s) {
   for (const e of s.expenses) {
     const vat = Number(e.vat || 0), net = round2(Number(e.amount) - vat);
     const from = e.accountId || (e.bankTxnId && txnAccount(e.bankTxnId)) || (e.method === 'Personal funds' ? bySystem('dla') : defaultBank);
-    add(e.date, { type: 'expense', id: e.id }, `Expense · ${e.payee}`, [
+    add(e.date, { type: 'expense', id: e.id, projectId: e.projectId }, `Expense · ${e.payee}`, [
       { accountId: byName(e.category, 'other_expense'), debit: net }, { accountId: VAT, debit: vat }, { accountId: from, credit: Number(e.amount) }]);
   }
 
@@ -211,7 +211,7 @@ function build(s) {
 
   for (const t of s.trips) {
     if (!t.claim) continue;
-    add(t.date, { type: 'trip', id: t.id }, `Mileage · ${t.purpose || ''}`, [
+    add(t.date, { type: 'trip', id: t.id, projectId: t.projectId }, `Mileage · ${t.purpose || ''}`, [
       { accountId: bySystem('vehicle'), debit: t.claim }, { accountId: bySystem('dla'), credit: t.claim }]);
   }
 
