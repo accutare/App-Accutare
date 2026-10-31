@@ -18,11 +18,9 @@ function lastMonths(n) {
 function chart(months, cur) {
   const s = store.get();
   const data = months.map((m) => {
-    const income = s.invoices.filter((i) => !i.draft && monthKey(i.date) === m)
-      .reduce((a, i) => a + store.invoiceTotals(i).subtotal, 0);
-    const expense = store.costEntries().filter((e) => monthKey(e.date) === m)
-      .reduce((a, e) => a + e.net, 0);
-    return { m, income, expense };
+    const end = new Date(Number(m.slice(0, 4)), Number(m.slice(5)), 0).getDate();
+    const pl = store.profitAndLoss(`${m}-01`, `${m}-${String(end).padStart(2, '0')}`);
+    return { m, income: pl.totalIncome, expense: pl.totalExpenses };
   });
   const max = Math.max(1, ...data.flatMap((d) => [d.income, d.expense]));
   const W = 600, H = 220, pad = 28, gw = (W - pad) / data.length, bw = Math.min(26, gw / 3);
@@ -48,7 +46,22 @@ export function render() {
   const live = s.invoices.filter((i) => !i.draft);
   const open = live.filter((i) => store.invoiceTotals(i).balance > 0);
   const overdue = open.filter((i) => store.invoiceStatus(i) === 'overdue');
-  const sum = (list) => list.reduce((a, i) => a + store.invoiceTotals(i).balance, 0);
+  const sum = (list) => list.reduce((a, i) => a + store.invoiceTotalsHome(i).balance, 0);
+  const tasks = [];
+  const reminders = store.dueReminders();
+  if (reminders.length) tasks.push([`${reminders.length} overdue invoice(s) need a reminder`, '#/invoices']);
+  const review = s.bankTransactions.filter((t) => t.status === 'new').length;
+  if (review) tasks.push([`${review} bank transaction(s) to review`, '#/banking']);
+  const weekAhead = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const billsSoon = s.bills.filter((b) => store.billTotals(b).balance > 0 && b.dueDate <= weekAhead);
+  if (billsSoon.length) tasks.push([`${billsSoon.length} bill(s) due within 7 days`, '#/bills']);
+  for (const p of store.lowStock()) tasks.push([`Low stock: ${p.name} (${store.stockOnHand(p.id)} left)`, '#/products']);
+  const drafts = s.invoices.filter((i) => i.draft).length;
+  if (drafts) tasks.push([`${drafts} draft invoice(s) not sent`, '#/invoices']);
+  const unbilled = s.timeEntries.filter((t) => t.billable && !t.invoiceId).length;
+  if (unbilled) tasks.push([`${unbilled} unbilled time entr${unbilled === 1 ? 'y' : 'ies'}`, '#/time']);
+  const lastQ = (() => { const d = new Date(); const q = new Date(d.getFullYear(), Math.floor(d.getMonth() / 3) * 3, 0); return q.toISOString().slice(0, 10); })();
+  if (s.company.vatNumber && !s.vatReturns.some((r) => r.to === lastQ)) tasks.push(['VAT return for last quarter not filed', '#/vat']);
   const billsDue = s.bills.reduce((a, b) => a + store.billTotals(b).balance, 0);
   const toReview = s.bankTransactions.filter((t) => t.status === 'new').length;
   const recent = [...s.invoices].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
@@ -57,13 +70,14 @@ export function render() {
     <section class="kpis">
       <a class="card kpi" href="#/banking"><span>Bank balance${toReview ? ` · ${toReview} to review` : ''}</span><strong>${money(store.bankBalance(), cur)}</strong></a>
       <a class="card kpi" href="#/bills"><span>Bills to pay</span><strong>${money(billsDue, cur)}</strong></a>
-      <div class="card kpi"><span>Income (YTD)</span><strong>${money(pl.income, cur)}</strong></div>
+      <div class="card kpi"><span>Income (YTD)</span><strong>${money(pl.totalIncome, cur)}</strong></div>
       <div class="card kpi"><span>Expenses (YTD)</span><strong>${money(pl.totalExpenses, cur)}</strong></div>
       <div class="card kpi"><span>Net profit (YTD)</span><strong class="${pl.net < 0 ? 'neg' : 'pos'}">${money(pl.net, cur)}</strong></div>
       <a class="card kpi" href="#/invoices"><span>Unpaid invoices · ${open.length}</span><strong>${money(sum(open), cur)}</strong></a>
       <a class="card kpi warn" href="#/invoices"><span>Overdue · ${overdue.length}</span><strong>${money(sum(overdue), cur)}</strong></a>
     </section>
 
+    ${tasks.length ? `<section class="card tasks"><h3>To do</h3><ul class="list">${tasks.map(([t, h]) => `<li><a href="${h}"><span>${esc(t)}</span><span class="muted">›</span></a></li>`).join('')}</ul></section>` : ''}
     <section class="grid-2">
       <div class="card">
         <h3>Income vs expenses — last 6 months</h3>
@@ -75,7 +89,7 @@ export function render() {
           ${recent.map((i) => `
             <li><a href="#/invoices/${i.id}">
               <div><strong>#${esc(i.number)} · ${esc(store.customerName(i.customerId))}</strong><small>${fmtDate(i.date)}</small></div>
-              <div class="right"><strong>${money(store.invoiceTotals(i).total, cur)}</strong>${badge(store.invoiceStatus(i))}</div>
+              <div class="right"><strong>${money(store.invoiceTotals(i).total, store.invoiceCurrency(i))}</strong>${badge(store.invoiceStatus(i))}</div>
             </a></li>`).join('') || '<li class="muted">No invoices yet.</li>'}
         </ul>
       </div>
@@ -85,6 +99,9 @@ export function render() {
       <button class="btn" data-quick="invoice">${icon('invoice')} New invoice</button>
       <button class="btn" data-quick="expense">${icon('expenses')} New expense</button>
       <button class="btn" data-quick="customer">${icon('customers')} New customer</button>
+      <button class="btn" data-quick="bill">${icon('bill')} New bill</button>
+      <button class="btn" data-quick="time">${icon('clock')} Log time</button>
+      <button class="btn" data-quick="trip">${icon('car')} Log trip</button>
     </section>`;
 }
 

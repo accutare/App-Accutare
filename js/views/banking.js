@@ -1,10 +1,13 @@
 import * as store from '../store.js';
 import { money, esc, fmtDate, today, icon, round2, uid } from '../utils.js';
 import { openModal, closeModal, fields, readForm, toast, confirmDialog, emptyState } from '../ui.js';
+import { openAccountForm } from './accounts.js';
 
 export const title = 'Banking';
 
 let tab = 'review';
+let acctId = null;
+const currentAccount = () => { const list = store.bankAccounts(); if (!list.find((a) => a.id === acctId)) acctId = list[0]?.id; return store.find('accounts', acctId); };
 
 function linkLabel(t) {
   const l = t.link;
@@ -13,6 +16,7 @@ function linkLabel(t) {
   if (l.type === 'expense') { const e = store.find('expenses', l.id); return `Expense · ${esc(e?.category || '')}`; }
   if (l.type === 'otherIncome') { const r = store.find('otherIncome', l.id); return `Income · ${esc(r?.category || '')}`; }
   if (l.type === 'invoices') { const i = store.find('invoices', l.id); return `<a href="#/invoices/${l.id}">Payment · invoice #${esc(i?.number)}</a>`; }
+  if (l.type === 'account') return `Transfer / journal · ${esc(store.find('accounts', l.id)?.name || '')}`;
   if (l.type === 'bills') return `<a href="#/bills/${l.id}">Bill payment · ${esc(store.vendorName(store.find('bills', l.id)?.vendorId))}</a>`;
   return '';
 }
@@ -43,13 +47,14 @@ function openPost(t) {
   const isIn = t.amount > 0;
   const cands = candidates(t);
   const exact = cands.find((c) => Math.abs(c.balance - Math.abs(t.amount)) < 0.005);
-  const cats = isIn ? store.INCOME_CATEGORIES : store.EXPENSE_CATEGORIES;
+  const cats = isIn ? store.incomeCategories() : store.expenseCategories();
   openModal({
     title: `${isIn ? 'Money in' : 'Money out'} · ${money(Math.abs(t.amount), co.currency)}`,
     body: `
       <p><strong>${esc(t.description)}</strong><br><span class="muted">${fmtDate(t.date)}</span></p>
       <div class="tabs"><button class="tab ${exact ? '' : 'active'}" data-mode="categorise">Categorise</button>
-        <button class="tab ${exact ? 'active' : ''}" data-mode="match" ${cands.length ? '' : 'disabled'}>Match ${isIn ? 'invoice' : 'bill'} (${cands.length})</button></div>
+        <button class="tab ${exact ? 'active' : ''}" data-mode="match" ${cands.length ? '' : 'disabled'}>Match ${isIn ? 'invoice' : 'bill'} (${cands.length})</button>
+        <button class="tab" data-mode="transfer">Transfer / other</button></div>
       <form data-form="categorise" ${exact ? 'hidden' : ''}>
         ${fields([
           ...(isIn ? [] : [{ name: 'payee', label: 'Payee', value: t.description }]),
@@ -63,12 +68,19 @@ function openPost(t) {
         <div class="choice-list">${cands.map((c, i) => `<label class="choice"><input type="radio" name="id" value="${c.id}" ${(exact ? c === exact : i === 0) ? 'checked' : ''}>
           <span>${esc(c.label)}</span><strong>${money(c.balance, co.currency)}</strong></label>`).join('')}</div>
         <footer class="modal-foot"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Match</button></footer>
+      </form>
+      <form data-form="transfer" hidden>
+        <p class="muted small">Use for transfers between your own accounts, credit card repayments, loans, VAT/PAYE payments to HMRC, money you put in or take out.</p>
+        ${fields([{ name: 'accountId', label: isIn ? 'Money came from' : 'Money went to', type: 'select',
+          options: store.get().accounts.filter((a) => a.id !== t.accountId && !['income', 'other_income', 'expense', 'cost_of_sales', 'ar', 'ap'].includes(a.type) && !a.inactive).map((a) => [a.id, `${a.code} ${a.name}`]) }])}
+        <footer class="modal-foot"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Record</button></footer>
       </form>`,
     onMount(m) {
       m.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
         m.querySelectorAll('[data-mode]').forEach((x) => x.classList.toggle('active', x === b));
         m.querySelector('[data-form=categorise]').hidden = b.dataset.mode !== 'categorise';
         m.querySelector('[data-form=match]').hidden = b.dataset.mode !== 'match';
+        m.querySelector('[data-form=transfer]').hidden = b.dataset.mode !== 'transfer';
       }));
       const cf = m.querySelector('[data-form=categorise]');
       cf.querySelector('[data-calc-vat]').addEventListener('click', () => {
@@ -80,6 +92,11 @@ function openPost(t) {
         e.preventDefault();
         store.postBankTransaction(t, 'categorise', readForm(cf));
         closeModal(); toast('Added to your books');
+      });
+      m.querySelector('[data-form=transfer]').addEventListener('submit', (e) => {
+        e.preventDefault();
+        store.postBankTransaction(t, 'account', readForm(e.target));
+        closeModal(); toast('Recorded');
       });
       m.querySelector('[data-form=match]').addEventListener('submit', (e) => {
         e.preventDefault();
@@ -94,7 +111,7 @@ function openPost(t) {
 
 function openImport() {
   openModal({
-    title: 'Import bank statement',
+    title: `Import into ${currentAccount()?.name}`,
     body: `<p class="muted">Upload a CSV exported from your online banking. Columns needed: date, description and either <em>amount</em> or <em>paid in / paid out</em>. Duplicates are skipped.</p>
       <label class="btn">Choose CSV file<input type="file" accept=".csv,text/csv" data-file hidden></label>
       <p class="muted small">Or add one transaction by hand:</p>
@@ -109,14 +126,14 @@ function openImport() {
         if (!f) return;
         const list = store.parseBankCsv(await f.text());
         if (!list.length) return toast('No transactions found in that file');
-        const n = store.importBankTransactions(list);
+        const n = store.importBankTransactions(list, acctId);
         closeModal(); toast(`${n} transaction${n === 1 ? '' : 's'} imported`);
       });
       m.querySelector('form').addEventListener('submit', (e) => {
         e.preventDefault();
         const d = readForm(e.target);
         if (!d.amount) return toast('Enter an amount');
-        store.importBankTransactions([{ ...d, amount: round2(d.amount) }]);
+        store.importBankTransactions([{ ...d, amount: round2(d.amount) }], acctId);
         closeModal();
       });
     },
@@ -126,13 +143,13 @@ function openImport() {
 function openReconcile() {
   const s = store.get();
   const cur = s.company.currency;
-  const begin = store.reconciledBalance();
+  const begin = store.reconciledBalance(acctId);
   openModal({
-    title: 'Reconcile account', wide: true,
+    title: `Reconcile ${currentAccount()?.name}`, wide: true,
     body: `<form>
       ${fields([
         { name: 'endDate', label: 'Statement end date', type: 'date', value: today(), required: true },
-        { name: 'endBalance', label: 'Statement ending balance', type: 'number', step: '0.01', value: store.bankBalance(), required: true },
+        { name: 'endBalance', label: 'Statement ending balance', type: 'number', step: '0.01', value: store.bankBalance(acctId), required: true },
       ])}
       <div class="recon-summary" data-summary></div>
       <div class="table-scroll"><table class="table"><thead><tr><th></th><th>Date</th><th>Description</th><th class="num">Amount</th></tr></thead><tbody data-list></tbody></table></div>
@@ -142,7 +159,7 @@ function openReconcile() {
       const list = m.querySelector('[data-list]');
       const draw = () => {
         const end = form.elements.endDate.value;
-        const rows = s.bankTransactions.filter((t) => !t.reconciled && t.date <= end).sort((a, b) => a.date.localeCompare(b.date));
+        const rows = s.bankTransactions.filter((t) => t.accountId === acctId && !t.reconciled && t.date <= end).sort((a, b) => a.date.localeCompare(b.date));
         list.innerHTML = rows.map((t) => `<tr><td><input type="checkbox" data-tid="${t.id}" checked></td><td>${fmtDate(t.date)}</td>
           <td>${esc(t.description)}</td><td class="num">${money(t.amount, cur)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">Nothing to reconcile.</td></tr>';
         sum();
@@ -171,17 +188,30 @@ function openReconcile() {
   });
 }
 
+function bookBalance(id) {
+  const g = store.journal();
+  let b = 0;
+  for (const e of g) for (const l of e.lines) if (l.accountId === id) b += l.debit - l.credit;
+  return store.find('accounts', id)?.type === 'credit_card' ? round2(b) : round2(b);
+}
+
 export function render() {
   const s = store.get();
   const cur = s.company.currency;
-  const all = [...s.bankTransactions].sort((a, b) => b.date.localeCompare(a.date));
+  const acc = currentAccount();
+  if (!acc) return emptyState('No bank accounts. Add one to start.') + '<p style="text-align:center"><button class="btn primary" data-add-acct>Add bank account</button></p>';
+  const all = s.bankTransactions.filter((t) => t.accountId === acc.id).sort((a, b) => b.date.localeCompare(a.date));
   const review = all.filter((t) => t.status === 'new');
   const rows = tab === 'review' ? review : all.filter((t) => t.status !== 'new');
   return `
+    <section class="bank-cards">${store.bankAccounts().map((a) => { const n = s.bankTransactions.filter((t) => t.accountId === a.id && t.status === 'new').length; return `
+      <button class="card bank-card ${a.id === acc.id ? 'active' : ''}" data-acct="${a.id}"><span>${a.type === 'credit_card' ? 'Credit card' : 'Bank'}</span><strong>${esc(a.name)}</strong>
+        <em>${money(store.bankBalance(a.id), cur)}</em>${n ? `<small class="badge badge-overdue">${n} to review</small>` : '<small class="muted">Up to date</small>'}</button>`; }).join('')}
+      <button class="card bank-card add" data-add-acct>${icon('plus')}<span>Add account</span></button></section>
     <section class="kpis">
-      <div class="card kpi"><span>${esc(s.company.bankName)} · bank balance</span><strong>${money(store.bankBalance(), cur)}</strong></div>
-      <div class="card kpi"><span>Reconciled balance</span><strong>${money(store.reconciledBalance(), cur)}</strong></div>
-      <div class="card kpi ${review.length ? 'warn' : ''}"><span>To review</span><strong>${review.length}</strong></div>
+      <div class="card kpi"><span>Bank balance (statement)</span><strong>${money(store.bankBalance(acc.id), cur)}</strong></div>
+      <div class="card kpi"><span>In your books</span><strong>${money(bookBalance(acc.id), cur)}</strong></div>
+      <div class="card kpi"><span>Reconciled balance</span><strong>${money(store.reconciledBalance(acc.id), cur)}</strong></div>
     </section>
     <div class="toolbar">
       <div class="tabs" style="margin:0"><button class="tab ${tab === 'review' ? 'active' : ''}" data-tab="review">For review (${review.length})</button>
@@ -201,6 +231,9 @@ export function render() {
 }
 
 export function mount(root, _p, app) {
+  root.querySelectorAll('[data-acct]').forEach((b) => b.addEventListener('click', () => { acctId = b.dataset.acct; app.rerender(); }));
+  root.querySelectorAll('[data-add-acct]').forEach((b) => b.addEventListener('click', () => openAccountForm({ name: '', type: 'bank', code: '' }, true)));
+  if (!root.querySelector('[data-import]')) return;
   root.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => { tab = b.dataset.tab; app.rerender(); }));
   root.querySelector('[data-import]').addEventListener('click', openImport);
   root.querySelector('[data-reconcile]').addEventListener('click', openReconcile);

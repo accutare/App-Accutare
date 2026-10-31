@@ -1,6 +1,8 @@
 // Data layer. Everything lives in localStorage so the app works offline with no backend.
 // Swap these functions for API calls later if you add a server.
 import { uid, today, addDays, round2 } from './utils.js';
+import * as L from './ledger.js';
+import { runRecurring } from './recurring.js';
 
 const KEY = 'accutare:v1';
 let state = null;
@@ -19,9 +21,28 @@ function defaults() {
       paymentTerms: 30,
       nextInvoiceNumber: 1001,
       nextEstimateNumber: 1,
-      bankName: 'Business current account',
-      openingBalance: 0,
+      logo: '',
+      accentColor: '#0f766e',
+      paymentDetails: '',
+      paymentLink: '',
+      reminderDays: 7,
+      fyStartMonth: 4,
+      fyStartDay: 6,
+      vatScheme: 'standard',
+      mileageVehicle: 'car',
+      nextJournalNumber: 1,
     },
+    accounts: [...L.defaultAccounts(), bankAccountDefaults()],
+    journals: [],
+    recurring: [],
+    timeEntries: [],
+    trips: [],
+    projects: [],
+    employees: [],
+    payRuns: [],
+    stockAdjustments: [],
+    vatReturns: [],
+    users: [],
     customers: [],
     vendors: [],
     products: [],
@@ -34,29 +55,48 @@ function defaults() {
   };
 }
 
-export const EXPENSE_CATEGORIES = [
+// Legacy list (categories now come from the chart of accounts).
+const OLD_EXPENSE_CATEGORIES = [
   'Advertising', 'Bank charges', 'Equipment', 'Insurance', 'Materials',
   'Office supplies', 'Professional fees', 'Rent', 'Software', 'Travel',
   'Utilities', 'Vehicle', 'Wages', 'Other',
 ];
 
+export const expenseCategories = () => state.accounts.filter((a) => ['expense', 'cost_of_sales'].includes(a.type) && !a.inactive).map((a) => a.name);
+export const incomeCategories = () => state.accounts.filter((a) => ['income', 'other_income'].includes(a.type) && !a.inactive).map((a) => a.name);
+export const bankAccounts = () => state.accounts.filter((a) => (a.type === 'bank' || a.type === 'credit_card') && !a.inactive);
+
 export function load() {
   try { state = JSON.parse(localStorage.getItem(KEY)); } catch { state = null; }
   if (!state) { state = defaults(); seedDemo(state); persist(); }
   else state = migrate(state);
+  if (runRecurring(state)) persist();
   return state;
 }
 
 // Fill in collections/settings added in newer versions.
+function bankAccountDefaults(name = 'Business current account', openingBalance = 0) {
+  return { id: 'acc-1200', code: '1200', name, type: 'bank', openingBalance, openingDate: '' };
+}
+
 function migrate(old) {
   const d = defaults();
-  return { ...d, ...old, company: { ...d.company, ...old.company } };
+  const s = { ...d, ...old, company: { ...d.company, ...old.company } };
+  if (!old.accounts) {
+    // v1/v2 data: single bank kept in company settings
+    s.accounts = [...L.defaultAccounts(), bankAccountDefaults(old.company?.bankName || 'Business current account', Number(old.company?.openingBalance || 0))];
+  }
+  const firstBank = s.accounts.find((a) => a.type === 'bank')?.id;
+  s.bankTransactions.forEach((t) => { t.accountId ||= firstBank; });
+  return s;
 }
 
 export const get = () => state;
 const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* storage unavailable: keep in memory */ } };
 
-export function save() { persist(); listeners.forEach((fn) => fn()); }
+let version = 0;
+export function save() { version++; persist(); listeners.forEach((fn) => fn()); }
+export const journal = () => L.journal(state, version);
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
 export function find(coll, id) { return state[coll].find((x) => x.id === id); }
@@ -115,6 +155,14 @@ export function invoiceTotals(inv) {
   return { subtotal, vat, total, paid, balance: round2(total - paid) };
 }
 
+export const rateOf = (inv) => Number(inv.rate || 1);
+/** Invoice totals converted to the company's home currency. */
+export function invoiceTotalsHome(inv) {
+  const t = invoiceTotals(inv), r = rateOf(inv);
+  return Object.fromEntries(Object.entries(t).map(([k, v]) => [k, round2(v * r)]));
+}
+export const invoiceCurrency = (inv) => inv.currency || state.company.currency;
+
 // draft | open | partial | overdue | paid
 export function invoiceStatus(inv) {
   if (inv.draft) return 'draft';
@@ -130,29 +178,36 @@ export function customerName(id) { return find('customers', id)?.name || '—'; 
 export function customerBalance(id) {
   return round2(state.invoices
     .filter((i) => i.customerId === id && !i.draft)
-    .reduce((s, i) => s + invoiceTotals(i).balance, 0));
+    .reduce((s, i) => s + invoiceTotalsHome(i).balance, 0));
 }
 
 export function expenseNet(e) { return round2(Number(e.amount || 0) - Number(e.vat || 0)); }
 
-/** Profit & loss between two ISO dates (inclusive), accrual basis. */
+/** Profit & loss between two ISO dates (inclusive) from the general ledger, plus VAT figures. */
 export function profitAndLoss(from, to) {
+  const pl = L.profitAndLoss(state.accounts, journal(), from, to);
+  const incomeByCategory = {}, byCategory = {};
+  for (const r of [...pl.income, ...pl.otherIncome]) incomeByCategory[r.account.name] = r.amount;
+  for (const r of [...pl.cos, ...pl.expenses]) byCategory[r.account.name] = r.amount;
+  const v = vatReturn(from, to);
+  return { ...pl, incomeByCategory, byCategory, outputVat: v.box1, inputVat: v.box4 };
+}
+
+/** The nine boxes of a UK VAT return (standard / accrual scheme) for a period. */
+export function vatReturn(from, to) {
   const inRange = (d) => d >= from && d <= to;
-  const invoices = state.invoices.filter((i) => !i.draft && inRange(i.date));
-  const incomeByCategory = { Sales: round2(invoices.reduce((s, i) => s + invoiceTotals(i).subtotal, 0)) };
-  let outputVat = round2(invoices.reduce((s, i) => s + invoiceTotals(i).vat, 0));
-  for (const r of state.otherIncome.filter((x) => inRange(x.date))) {
-    const net = round2(Number(r.amount) - Number(r.vat || 0));
-    incomeByCategory[r.category] = round2((incomeByCategory[r.category] || 0) + net);
-    outputVat = round2(outputVat + Number(r.vat || 0));
+  let box1 = 0, box4 = 0, box6 = 0, box7 = 0;
+  for (const i of state.invoices.filter((x) => !x.draft && inRange(x.date))) {
+    const t = invoiceTotalsHome(i); box1 += t.vat; box6 += t.subtotal;
   }
-  const income = round2(Object.values(incomeByCategory).reduce((a, b) => a + b, 0));
-  const costs = costEntries().filter((e) => inRange(e.date));
-  const byCategory = {};
-  for (const e of costs) byCategory[e.category] = round2((byCategory[e.category] || 0) + e.net);
-  const totalExpenses = round2(Object.values(byCategory).reduce((a, b) => a + b, 0));
-  const inputVat = round2(costs.reduce((s, e) => s + e.vat, 0));
-  return { income, incomeByCategory, byCategory, totalExpenses, net: round2(income - totalExpenses), outputVat, inputVat };
+  for (const r of state.otherIncome.filter((x) => inRange(x.date))) {
+    box1 += Number(r.vat || 0);
+    if (r.category === 'Sales' || Number(r.vat)) box6 += Number(r.amount) - Number(r.vat || 0);
+  }
+  for (const c of costEntries().filter((x) => inRange(x.date))) { box4 += c.vat; box7 += c.net; }
+  box1 = round2(box1); box4 = round2(box4);
+  const box2 = 0, box3 = round2(box1 + box2), box5 = round2(box3 - box4);
+  return { box1, box2, box3, box4, box5, box6: Math.floor(box6), box7: Math.floor(box7), box8: 0, box9: 0 };
 }
 
 // ---------- Bills (accounts payable) ----------
@@ -191,7 +246,7 @@ export function convertEstimate(est) {
   const inv = upsert('invoices', {
     number: String(co.nextInvoiceNumber), customerId: est.customerId, date: today(),
     dueDate: addDays(today(), co.paymentTerms), lines: structuredClone(est.lines),
-    notes: est.notes, payments: [], draft: false, estimateId: est.id,
+    notes: est.notes, payments: [], draft: false, estimateId: est.id, currency: est.currency, rate: est.rate, projectId: est.projectId || '',
   });
   state.company.nextInvoiceNumber += 1;
   upsert('estimates', { ...est, invoiceId: inv.id, status: 'accepted' });
@@ -214,16 +269,18 @@ export function costEntries() {
 
 // ---------- Banking ----------
 
-export function bankBalance() {
-  return round2(Number(state.company.openingBalance || 0) + state.bankTransactions.reduce((s, t) => s + Number(t.amount), 0));
+export function bankBalance(accountId) {
+  const accts = accountId ? [find('accounts', accountId)] : bankAccounts().filter((a) => a.type === 'bank');
+  return round2(accts.reduce((sum, acc) => sum + Number(acc?.openingBalance || 0) * (acc?.type === 'credit_card' ? -1 : 1) +
+    state.bankTransactions.filter((t) => t.accountId === acc?.id).reduce((x, t) => x + Number(t.amount), 0), 0));
 }
 
-export function reconciledBalance() {
-  return round2(Number(state.company.openingBalance || 0) +
-    state.bankTransactions.filter((t) => t.reconciled).reduce((s, t) => s + Number(t.amount), 0));
+export function reconciledBalance(accountId) {
+  const acc = find('accounts', accountId);
+  return round2(Number(acc?.openingBalance || 0) * (acc?.type === 'credit_card' ? -1 : 1) +
+    state.bankTransactions.filter((t) => t.reconciled && t.accountId === accountId).reduce((s, t) => s + Number(t.amount), 0));
 }
 
-export const INCOME_CATEGORIES = ['Sales', 'Interest', 'Refunds', 'Other income'];
 
 /** Turn a bank line into a book entry. kind: 'categorise' | 'invoice' | 'bill' | 'exclude' */
 export function postBankTransaction(txn, kind, opts = {}) {
@@ -237,6 +294,8 @@ export function postBankTransaction(txn, kind, opts = {}) {
     const r = upsert('otherIncome', { date: txn.date, description: txn.description, category: opts.category,
       amount: amt, vat: Number(opts.vat || 0), bankTxnId: txn.id });
     link = { type: 'otherIncome', id: r.id };
+  } else if (kind === 'account') {
+    link = { type: 'account', id: opts.accountId };
   } else if (kind === 'invoice' || kind === 'bill') {
     const coll = kind === 'invoice' ? 'invoices' : 'bills';
     const doc = find(coll, opts.id);
@@ -298,18 +357,124 @@ function parseCsvLine(line) {
   return out;
 }
 
-export function importBankTransactions(list) {
-  const seen = new Set(state.bankTransactions.map((t) => `${t.date}|${t.amount}|${t.description}`));
+export function importBankTransactions(list, accountId) {
+  accountId ||= bankAccounts()[0]?.id;
+  const seen = new Set(state.bankTransactions.filter((t) => t.accountId === accountId).map((t) => `${t.date}|${t.amount}|${t.description}`));
   let added = 0;
   for (const t of list) {
     const key = `${t.date}|${t.amount}|${t.description}`;
     if (seen.has(key)) continue;
+    t.accountId = accountId;
     seen.add(key);
     state.bankTransactions.push({ id: uid(), ...t, status: 'new', reconciled: false, link: null });
     added++;
   }
   save();
   return added;
+}
+
+// ---------- Stock ----------
+
+/** Quantity on hand = opening qty + adjustments − quantity on issued invoices. */
+export function stockOnHand(productId) {
+  const p = find('products', productId);
+  if (!p?.trackStock) return null;
+  const sold = state.invoices.filter((i) => !i.draft).flatMap((i) => i.lines).filter((l) => l.productId === productId)
+    .reduce((s, l) => s + Number(l.qty || 0), 0);
+  const adj = state.stockAdjustments.filter((a) => a.productId === productId).reduce((s, a) => s + Number(a.qty || 0), 0);
+  return round2(Number(p.openingQty || 0) + adj - sold);
+}
+export const lowStock = () => state.products.filter((p) => p.trackStock && stockOnHand(p.id) <= Number(p.reorderPoint || 0));
+
+// ---------- Mileage (HMRC approved mileage allowance payments) ----------
+
+export const MILEAGE_RATES = { car: [0.45, 0.25], van: [0.45, 0.25], motorcycle: [0.24, 0.24], bicycle: [0.20, 0.20] };
+
+export function taxYearOf(date) {
+  const y = Number(date.slice(0, 4));
+  return date >= `${y}-04-06` ? y : y - 1; // tax year starting 6 April of returned year
+}
+
+/** Recalculate claim on every trip: 45p for the first 10,000 business miles per tax year (cars/vans), 25p after. */
+export function recalcMileage() {
+  const used = {};
+  for (const t of [...state.trips].sort((a, b) => a.date.localeCompare(b.date) || (a.createdAt || '').localeCompare(b.createdAt || ''))) {
+    const [hi, lo] = MILEAGE_RATES[t.vehicle] || MILEAGE_RATES.car;
+    const key = `${taxYearOf(t.date)}|${t.vehicle}`;
+    const before = used[key] || 0;
+    const miles = Number(t.miles || 0) * (t.returnTrip ? 2 : 1);
+    const atHigh = Math.max(0, Math.min(miles, 10000 - before));
+    t.totalMiles = miles;
+    t.claim = round2(atHigh * hi + (miles - atHigh) * lo);
+    used[key] = before + miles;
+  }
+}
+
+// ---------- Projects ----------
+
+export function projectSummary(projectId) {
+  const inv = state.invoices.filter((i) => !i.draft && i.projectId === projectId);
+  const income = round2(inv.reduce((s, i) => s + invoiceTotalsHome(i).subtotal, 0));
+  const exp = state.expenses.filter((e) => e.projectId === projectId).reduce((s, e) => s + expenseNet(e), 0);
+  const bills = state.bills.filter((b) => b.projectId === projectId).reduce((s, b) => s + billTotals(b).subtotal, 0);
+  const time = state.timeEntries.filter((t) => t.projectId === projectId);
+  const hours = round2(time.reduce((s, t) => s + Number(t.hours || 0), 0));
+  const labour = round2(time.reduce((s, t) => s + Number(t.hours || 0) * Number(t.costRate || 0), 0));
+  const costs = round2(exp + bills + labour);
+  return { income, costs, labour, hours, profit: round2(income - costs), unbilled: round2(time.filter((t) => t.billable && !t.invoiceId).reduce((s, t) => s + t.hours * t.rate, 0)) };
+}
+
+// ---------- Time ----------
+
+/** Turn unbilled billable time for a customer into a draft invoice. */
+export function invoiceTime(customerId, entryIds) {
+  const entries = state.timeEntries.filter((t) => entryIds.includes(t.id));
+  if (!entries.length) return null;
+  const co = state.company;
+  const inv = upsert('invoices', {
+    number: String(co.nextInvoiceNumber), customerId, projectId: entries[0].projectId || '', date: today(),
+    dueDate: addDays(today(), co.paymentTerms), notes: 'Thank you for your business.', payments: [], draft: true,
+    lines: entries.map((t) => ({ productId: '', description: `${t.date} · ${t.description || 'Time'} (${t.hours}h)`, qty: Number(t.hours), price: Number(t.rate), vatRate: co.vatRate })),
+  });
+  state.company.nextInvoiceNumber += 1;
+  entries.forEach((t) => { t.invoiceId = inv.id; });
+  save();
+  return inv;
+}
+
+// ---------- Reminders ----------
+
+export function dueReminders() {
+  const days = Number(state.company.reminderDays || 7);
+  return state.invoices.filter((i) => invoiceStatus(i) === 'overdue' &&
+    (!i.lastReminder || addDays(i.lastReminder, days) <= today()));
+}
+
+function seedExtras(s, { customers, products, base }) {
+  const proj = { id: uid(), name: 'Northbridge – Block B security upgrade', customerId: customers[0].id, status: 'active', budget: 6000, createdAt: new Date().toISOString() };
+  s.projects = [proj];
+  s.invoices[3].projectId = proj.id;
+  s.bills[2].projectId = proj.id;
+  s.timeEntries = [
+    { id: uid(), date: addDays(base, -6), customerId: customers[0].id, projectId: proj.id, description: 'Site survey', hours: 3, rate: 65, costRate: 25, billable: true },
+    { id: uid(), date: addDays(base, -3), customerId: customers[0].id, projectId: proj.id, description: 'Cable runs, floors 1-2', hours: 7.5, rate: 65, costRate: 25, billable: true },
+    { id: uid(), date: addDays(base, -1), customerId: customers[1].id, projectId: '', description: 'Remote support', hours: 1.5, rate: 65, costRate: 25, billable: true },
+  ];
+  s.trips = [
+    { id: uid(), date: addDays(base, -6), from: 'Office', to: 'Northbridge, London N1', purpose: 'Site survey', miles: 18, returnTrip: true, vehicle: 'car', projectId: proj.id },
+    { id: uid(), date: addDays(base, -15), from: 'Office', to: 'Harper & Co, Manchester', purpose: 'CCTV service', miles: 42, returnTrip: true, vehicle: 'car' },
+  ];
+  s.employees = [
+    { id: uid(), name: 'Jamie Clarke', email: 'jamie@example.com', niNumber: 'QQ123456C', taxCode: '1257L', salary: 32000, pensionEe: 5, pensionEr: 3, startDate: '2024-04-01', active: true },
+  ];
+  products[0].trackStock = false;
+  s.products.push({ id: uid(), name: 'Door entry keypad', price: 120, vatRate: 20, description: 'Stainless steel keypad', trackStock: true, openingQty: 12, reorderPoint: 5, cost: 55 });
+  s.recurring = [{
+    id: uid(), name: 'Monthly CCTV monitoring', customerId: customers[2].id, frequency: 'monthly', nextDate: addDays(base, 12), endDate: '', active: true,
+    lines: [{ productId: '', description: 'Remote CCTV monitoring – monthly', qty: 1, price: 95, vatRate: 20 }], notes: 'Monthly service charge.', terms: 14,
+  }];
+  // mileage demo claims are calculated on first load
+  const save0 = state; state = s; recalcMileage(); state = save0;
 }
 
 // ---------- Demo data ----------
@@ -385,8 +550,9 @@ function seedDemo(s) {
     { id: uid(), number: String(s.company.nextEstimateNumber++), customerId: customers[2].id, date: addDays(base, -40), dueDate: addDays(base, -10),
       lines: [line(products[1], 2)], notes: '', payments: [], status: 'pending' },
   ];
-  s.company.openingBalance = 5000;
-  const t = (daysAgo, description, amount) => ({ id: uid(), date: addDays(base, -daysAgo), description, amount, status: 'new', reconciled: false, link: null });
+  s.accounts.find((a) => a.id === 'acc-1200').openingBalance = 5000;
+  s.accounts.push({ id: 'acc-1250', code: '1250', name: 'Business credit card', type: 'credit_card', openingBalance: 0 });
+  const t = (daysAgo, description, amount, accountId = 'acc-1200') => ({ id: uid(), accountId, date: addDays(base, -daysAgo), description, amount, status: 'new', reconciled: false, link: null });
   const inv1004 = s.invoices[3];
   s.bankTransactions = [
     t(9, 'FPS NORTHBRIDGE LETTINGS INV ' + inv1004.number, invoiceTotals(inv1004).total),
@@ -394,5 +560,8 @@ function seedDemo(s) {
     t(6, 'DD BRITISH GAS BUSINESS', -220.5),
     t(4, 'CARD PAYMENT AMAZON MARKETPLACE', -38.99),
     t(2, 'INTEREST PAID', 1.84),
+    t(3, 'ADOBE CREATIVE CLOUD', -19.97, 'acc-1250'),
+    t(1, 'PREMIER INN BRISTOL', -86, 'acc-1250'),
   ];
+  seedExtras(s, { customers, products, base });
 }

@@ -205,3 +205,43 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand-2); o
   body.nav-open .nav-scrim { display: block; position: fixed; inset: 0; background: rgba(15,23,42,.4); z-index: 35; }
   .recon-summary { grid-template-columns: 1fr; }
 }
+
+/* v3 */
+.menu { max-height: 70vh; overflow-y: auto; }
+.group-row td { background: #fafbfc; font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 700; padding: 8px 16px; }
+.report-catalog { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+.report-catalog .card { margin: 0; }
+.link-list { list-style: none; margin: 0; padding: 0; }
+.link-list li a { display: block; padding: 8px 0; border-bottom: 1px solid var(--line); font-weight: 500; }
+.link-list li:last-child a { border-bottom: 0; }
+.report-head { text-align: center; margin-bottom: 16px; }
+.report-head h2 { font-size: 1.2rem; margin: 4px 0; }
+.report-table td, .report-table th { padding: 8px 10px; }
+.report-table .section td { font-weight: 700; padding-top: 14px; }
+.report-table .indent, .indent-in { padding-left: 20px; display: inline-block; }
+.report-table .subtotal td { font-weight: 600; border-top: 1px solid var(--line); }
+.report-table .grand td { font-weight: 700; border-top: 2px solid var(--text); }
+.report h4 { margin: 18px 0 6px; }
+.bank-cards { display: flex; gap: 12px; overflow-x: auto; margin-bottom: 16px; padding-bottom: 4px; }
+.bank-card { min-width: 200px; text-align: left; border: 2px solid transparent; cursor: pointer; display: flex; flex-direction: column; gap: 4px; margin: 0; font: inherit; color: inherit; }
+.bank-card span { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.bank-card em { font-style: normal; font-size: 1.3rem; font-weight: 700; }
+.bank-card small { align-self: flex-start; }
+.bank-card.active { border-color: var(--brand); }
+.bank-card.add { align-items: center; justify-content: center; color: var(--brand); min-width: 140px; }
+.receipt-box { border: 1px dashed #cbd2d9; border-radius: 12px; padding: 12px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 10px; }
+.receipt-box img { max-height: 160px; max-width: 100%; border-radius: 8px; display: block; }
+.doc-logo { max-height: 64px; max-width: 200px; margin-bottom: 8px; display: block; }
+.doc-head { border-bottom-color: var(--accent, var(--brand)) !important; }
+.doc-head h1 { color: var(--accent, var(--brand)) !important; }
+.pay-box { background: var(--bg); border-radius: 10px; padding: 12px 14px; margin-top: 12px; }
+.brand-row { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
+.logo-preview { width: 140px; height: 70px; border: 1px solid var(--line); border-radius: 10px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.logo-preview img { max-width: 100%; max-height: 100%; }
+input[type=color] { height: 42px; padding: 4px; }
+.bar { height: 6px; background: var(--bg); border-radius: 99px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--brand-2); }
+.tasks .list a span:first-child { font-weight: 500; }
+.timer-card strong { font-variant-numeric: tabular-nums; }
+.payslip header { display: flex; justify-content: space-between; margin-bottom: 8px; }
+.table.lines small { display: block; }

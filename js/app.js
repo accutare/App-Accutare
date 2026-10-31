@@ -12,28 +12,55 @@ import * as banking from './views/banking.js';
 import * as estimates from './views/estimates.js';
 import * as bills from './views/bills.js';
 import * as vendors from './views/vendors.js';
+import * as accounts from './views/accounts.js';
+import * as vat from './views/vat.js';
+import * as recurring from './views/recurring.js';
+import * as time from './views/time.js';
+import * as mileage from './views/mileage.js';
+import * as projects from './views/projects.js';
+import * as payroll from './views/payroll.js';
 
-const ROUTES = { dashboard, banking, invoices, estimates, customers, bills, vendors, expenses, products, reports, settings };
+const ROUTES = { dashboard, banking, invoices, estimates, recurring, customers, bills, vendors, expenses, products, reports, settings, accounts, vat, time, mileage, projects, payroll };
 const NAV = [
   ['dashboard', 'Dashboard', 'dashboard'],
   ['banking', 'Banking', 'bank'],
   ['', 'Sales', null],
   ['invoices', 'Invoices', 'invoice'],
   ['estimates', 'Estimates', 'estimate'],
+  ['recurring', 'Recurring', 'repeat'],
   ['customers', 'Customers', 'customers'],
+  ['products', 'Products & stock', 'products'],
   ['', 'Purchases', null],
   ['bills', 'Bills', 'bill'],
   ['expenses', 'Expenses', 'expenses'],
   ['vendors', 'Suppliers', 'vendors'],
-  ['', 'Business', null],
-  ['products', 'Products', 'products'],
+  ['', 'Work', null],
+  ['projects', 'Projects', 'folder'],
+  ['time', 'Time', 'clock'],
+  ['mileage', 'Mileage', 'car'],
+  ['payroll', 'Payroll', 'payroll'],
+  ['', 'Accounting', null],
   ['reports', 'Reports', 'reports'],
+  ['vat', 'VAT returns', 'vat'],
+  ['accounts', 'Chart of accounts', 'book'],
   ['settings', 'Settings', 'settings'],
 ];
 const MOBILE_NAV = ['dashboard', 'banking', 'invoices', 'bills'];
 
 const app = {
   rerender: () => route(),
+  /** Download every table on the current page as one CSV file. */
+  exportTables(name = 'report') {
+    const cell = (td) => {
+      const t = td.innerText.replace(/\s+/g, ' ').trim();
+      const n = t.replace(/[£$€,]/g, '');
+      return /^-?\d+(\.\d+)?$/.test(n) && /\d/.test(t) ? n : `"${t.replace(/"/g, '""')}"`;
+    };
+    const csv = [...document.querySelectorAll('#main table')].map((tb) => [...tb.rows].map((r) => [...r.cells].map(cell).join(',')).join('\n')).join('\n\n');
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' })), download: `${name.replace(/[^\w-]+/g, '-')}-${new Date().toISOString().slice(0, 10)}.csv` });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  },
   quickCreate(kind, preset) {
     if (kind === 'invoice') {
       if (!store.get().customers.length) return customers.openCustomerForm(null, () => invoices.openInvoiceForm());
@@ -47,6 +74,10 @@ const app = {
     }
     if (kind === 'bill') bills.openBillForm(null, preset);
     if (kind === 'vendor') vendors.openVendorForm();
+    if (kind === 'time') time.openTimeForm(null, preset);
+    if (kind === 'trip') mileage.openTripForm();
+    if (kind === 'journal') accounts.openJournalForm();
+    if (kind === 'recurring') recurring.openRecurringForm();
   },
 };
 

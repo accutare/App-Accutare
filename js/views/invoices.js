@@ -2,6 +2,34 @@ import * as store from '../store.js';
 import { money, esc, fmtDate, today, addDays, icon, uid, round2 } from '../utils.js';
 import { openModal, closeModal, fields, readForm, toast, confirmDialog, emptyState, searchBox, bindFilter, badge } from '../ui.js';
 import { openCustomerForm } from './customers.js';
+import { openRecurringForm } from './recurring.js';
+
+export const CURRENCIES = ['GBP', 'EUR', 'USD', 'BRL', 'CAD', 'AUD', 'CHF', 'PLN'];
+
+/** Branded header shared by invoices and estimates. */
+export function docHeader(co, label, number) {
+  return `<header class="doc-head" style="--accent:${esc(co.accentColor || '#0f766e')}">
+    <div>${co.logo ? `<img class="doc-logo" src="${co.logo}" alt="">` : ''}<h2>${esc(co.name)}</h2><p class="pre muted">${esc(co.address)}</p>
+      <p class="muted">${[co.email, co.phone].filter(Boolean).map(esc).join(' · ')}</p>
+      ${co.vatNumber ? `<p class="muted">VAT no. ${esc(co.vatNumber)}</p>` : ''}</div>
+    <div class="right"><h1>${label}</h1><p>${esc(number)}</p></div>
+  </header>`;
+}
+
+function mailto(inv, reminder) {
+  const co = store.get().company;
+  const c = store.find('customers', inv.customerId) || {};
+  const t = store.invoiceTotals(inv), cur = store.invoiceCurrency(inv);
+  const subject = reminder ? `Reminder: invoice #${inv.number} is overdue` : `Invoice #${inv.number} from ${co.name}`;
+  const body = [`Dear ${c.name || 'customer'},`, '',
+    reminder ? `Our records show that invoice #${inv.number}, due on ${fmtDate(inv.dueDate)}, still has ${money(t.balance, cur)} outstanding. We would be grateful if you could arrange payment.`
+      : `Please find below invoice #${inv.number} for ${money(t.total, cur)}, due on ${fmtDate(inv.dueDate)}.`, '',
+    ...inv.lines.map((l) => `- ${l.description}: ${l.qty} x ${money(l.price, cur)}`), '',
+    `Total: ${money(t.total, cur)}`, t.paid ? `Balance due: ${money(t.balance, cur)}` : '',
+    co.paymentDetails ? `\nHow to pay:\n${co.paymentDetails}` : '', inv.paymentLink || co.paymentLink ? `Pay online: ${inv.paymentLink || co.paymentLink}` : '',
+    '', 'Kind regards,', co.name].filter((x) => x !== '').join('\n');
+  return `mailto:${encodeURIComponent(c.email || '')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
 
 export const title = 'Invoices';
 
@@ -33,7 +61,7 @@ export function openInvoiceForm(existing, preset = {}, kind = 'invoice') {
   const s = store.get();
   const co = s.company;
   const inv = existing ? structuredClone(existing) : {
-    number: String(co[K.counter]), customerId: preset.customerId || s.customers[0]?.id || '',
+    number: String(co[K.counter]), customerId: preset.customerId || s.customers[0]?.id || '', projectId: preset.projectId || '',
     date: today(), dueDate: addDays(today(), co.paymentTerms), notes: 'Thank you for your business.',
     lines: [{ productId: '', description: '', qty: 1, price: 0, vatRate: co.vatRate }], payments: [], draft: false,
   };
@@ -45,7 +73,10 @@ export function openInvoiceForm(existing, preset = {}, kind = 'invoice') {
       { name: 'number', label: `${K.label} no.`, required: true },
       { name: 'date', label: `${K.label} date`, type: 'date', required: true },
       { name: 'dueDate', label: K.due, type: 'date', required: true },
-    ], inv)}
+      { name: 'projectId', label: 'Project', type: 'select', options: [['', '— None —'], ...s.projects.filter((p) => p.status !== 'closed' || p.id === inv.projectId).map((p) => [p.id, p.name])] },
+      { name: 'currency', label: 'Currency', type: 'select', options: CURRENCIES.includes(co.currency) ? CURRENCIES : [co.currency, ...CURRENCIES] },
+      { name: 'rate', label: `Exchange rate (1 unit = ? ${co.currency})`, type: 'number', step: 'any' },
+    ], { currency: co.currency, rate: 1, ...preset, ...inv })}
     <button type="button" class="link-btn" data-add-customer>+ Add new customer</button>
     <div class="table-scroll"><table class="table lines">
       <thead><tr><th>Product / service</th><th>Qty</th><th>Rate</th><th>VAT %</th><th class="num">Amount</th><th></th></tr></thead>
@@ -72,17 +103,24 @@ export function openInvoiceForm(existing, preset = {}, kind = 'invoice') {
         tr.querySelectorAll('[data-k]').forEach((el) => { o[el.dataset.k] = el.type === 'number' ? Number(el.value || 0) : el.value; });
         return o;
       });
+      const rateField = form.elements.rate.closest('.field');
       const recalc = () => {
+        const cur = form.elements.currency.value;
+        rateField.hidden = cur === co.currency;
+        if (cur === co.currency) form.elements.rate.value = 1;
         tbody.querySelectorAll('tr.line').forEach((tr, idx) => {
           const l = readLines()[idx];
-          tr.querySelector('[data-amount]').textContent = money(round2(l.qty * l.price), co.currency);
+          tr.querySelector('[data-amount]').textContent = money(round2(l.qty * l.price), cur);
         });
         const t = store.invoiceTotals({ lines: readLines(), payments: inv.payments });
         form.querySelector('[data-totals]').innerHTML = `
-          <dt>Subtotal</dt><dd>${money(t.subtotal, co.currency)}</dd>
-          <dt>VAT</dt><dd>${money(t.vat, co.currency)}</dd>
-          <dt class="grand">Total</dt><dd class="grand">${money(t.total, co.currency)}</dd>`;
+          <dt>Subtotal</dt><dd>${money(t.subtotal, cur)}</dd>
+          <dt>VAT</dt><dd>${money(t.vat, cur)}</dd>
+          <dt class="grand">Total</dt><dd class="grand">${money(t.total, cur)}</dd>
+          ${cur !== co.currency ? `<dt>In ${co.currency}</dt><dd>${money(t.total * Number(form.elements.rate.value || 1), co.currency)}</dd>` : ''}`;
       };
+      form.elements.currency.addEventListener('change', recalc);
+      form.elements.rate.addEventListener('input', recalc);
       tbody.addEventListener('input', recalc);
       tbody.addEventListener('change', (e) => {
         if (e.target.dataset.k !== 'productId') return;
@@ -123,6 +161,10 @@ export function openInvoiceForm(existing, preset = {}, kind = 'invoice') {
         const lines = readLines().filter((l) => l.description || l.price);
         if (!lines.length) return toast('Add at least one line');
         const isNew = !existing;
+        if (kind === 'invoice' && e.submitter?.value !== 'draft') {
+          const short = lines.filter((l) => { const q = store.stockOnHand(l.productId); return q !== null && l.qty > q + (existing && !existing.draft ? (existing.lines.find((x) => x.productId === l.productId)?.qty || 0) : 0); });
+          if (short.length && !confirmDialog(`Not enough stock for: ${short.map((l) => l.description).join(', ')}. Save anyway?`)) return;
+        }
         const saved = store.upsert(K.coll, {
           ...inv, ...data, lines, draft: e.submitter?.value === 'draft',
         });
@@ -139,12 +181,14 @@ export function openInvoiceForm(existing, preset = {}, kind = 'invoice') {
 function openPaymentForm(inv) {
   const t = store.invoiceTotals(inv);
   openModal({
-    title: `Receive payment — #${inv.number}`,
+    title: `Receive payment — #${inv.number} (${store.invoiceCurrency(inv)})`,
     body: `<form>${fields([
       { name: 'date', label: 'Payment date', type: 'date', value: today(), required: true },
       { name: 'amount', label: 'Amount received', type: 'number', step: '0.01', value: t.balance, required: true },
       { name: 'method', label: 'Method', type: 'select', options: ['Bank transfer', 'Card', 'Cash', 'Cheque', 'Other'] },
-    ])}<footer class="modal-foot"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Save payment</button></footer></form>`,
+      { name: 'accountId', label: 'Deposit to', type: 'select', options: store.bankAccounts().map((a) => [a.id, a.name]) },
+    ])}<p class="muted small">Tip: payments that arrive in your bank feed can be matched in Banking instead.</p>
+    <footer class="modal-foot"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Save payment</button></footer></form>`,
     onMount: (m) => m.querySelector('form').addEventListener('submit', (e) => {
       e.preventDefault();
       const p = readForm(e.target);
@@ -178,35 +222,36 @@ export function render(params) {
       <tbody data-rows>${rows.map((i) => { const t = store.invoiceTotals(i); return `
         <tr data-href="#/invoices/${i.id}"><td>#${esc(i.number)}</td><td>${esc(store.customerName(i.customerId))}</td>
         <td class="hide-sm">${fmtDate(i.date)}</td><td class="hide-sm">${fmtDate(i.dueDate)}</td><td>${badge(store.invoiceStatus(i))}</td>
-        <td class="num">${money(t.balance, cur)}</td><td class="num hide-sm">${money(t.total, cur)}</td></tr>`; }).join('')}</tbody></table></div>`
+        <td class="num">${money(t.balance, store.invoiceCurrency(i))}</td><td class="num hide-sm">${money(t.total, store.invoiceCurrency(i))}</td></tr>`; }).join('')}</tbody></table></div>`
       : emptyState('No invoices here.')}`;
 }
 
 function renderDetail(id) {
   const inv = store.find('invoices', id);
   if (!inv) return emptyState('Invoice not found.');
-  const s = store.get(), co = s.company, cur = co.currency;
+  const s = store.get(), co = s.company, cur = store.invoiceCurrency(inv);
   const c = store.find('customers', inv.customerId) || {};
   const t = store.invoiceTotals(inv);
   const st = store.invoiceStatus(inv);
+  const link = inv.paymentLink || co.paymentLink;
+  const proj = inv.projectId && store.find('projects', inv.projectId);
   return `
     <a class="back no-print" href="#/invoices">← Invoices</a>
     <div class="toolbar no-print">
-      <div>${badge(st)}</div>
-      <div class="actions">
+      <div>${badge(st)} ${inv.sentAt ? `<small class="muted">Sent ${fmtDate(inv.sentAt)}</small>` : ''} ${inv.lastReminder ? `<small class="muted">· reminded ${fmtDate(inv.lastReminder)}</small>` : ''}
+        ${proj ? `<small>· <a href="#/projects/${proj.id}">${esc(proj.name)}</a></small>` : ''} ${inv.recurringId ? '<small class="muted">· from recurring template</small>' : ''}</div>
+      <div class="actions wrap">
         <button class="btn danger" data-delete>${icon('trash', 16)}</button>
         <button class="btn" data-edit>Edit</button>
+        <button class="btn" data-recurring>Make recurring</button>
         <button class="btn" data-print>${icon('print', 16)} Print / PDF</button>
+        ${st === 'overdue' ? `<a class="btn" data-remind href="${mailto(inv, true)}">Send reminder</a>` : ''}
+        <a class="btn" data-send href="${mailto(inv, false)}">${inv.sentAt ? 'Resend' : 'Send'} by email</a>
         ${t.balance > 0 ? '<button class="btn primary" data-pay>Receive payment</button>' : ''}
       </div>
     </div>
     <article class="card invoice-doc">
-      <header class="doc-head">
-        <div><h2>${esc(co.name)}</h2><p class="pre muted">${esc(co.address)}</p>
-          <p class="muted">${[co.email, co.phone].filter(Boolean).map(esc).join(' · ')}</p>
-          ${co.vatNumber ? `<p class="muted">VAT no. ${esc(co.vatNumber)}</p>` : ''}</div>
-        <div class="right"><h1>INVOICE</h1><p>#${esc(inv.number)}</p></div>
-      </header>
+      ${docHeader(co, 'INVOICE', '#' + inv.number)}
       <section class="doc-meta">
         <div><span class="muted">Bill to</span><strong>${esc(c.name || '—')}</strong><p class="pre">${esc(c.address || '')}</p></div>
         <dl><dt>Invoice date</dt><dd>${fmtDate(inv.date)}</dd><dt>Due date</dt><dd>${fmtDate(inv.dueDate)}</dd><dt>Balance due</dt><dd><strong>${money(t.balance, cur)}</strong></dd></dl>
@@ -217,11 +262,14 @@ function renderDetail(id) {
           <td class="num">${l.vatRate}%</td><td class="num">${money(round2(l.qty * l.price), cur)}</td></tr>`).join('')}</tbody>
       </table>
       <div class="doc-foot">
-        <p class="pre">${esc(inv.notes)}</p>
+        <div><p class="pre">${esc(inv.notes)}</p>
+          ${co.paymentDetails ? `<div class="pay-box"><strong>How to pay</strong><p class="pre">${esc(co.paymentDetails)}</p></div>` : ''}
+          ${link && t.balance > 0 ? `<p><a class="btn primary" href="${esc(link)}" target="_blank" rel="noopener">Pay online</a></p>` : ''}</div>
         <dl class="totals">
           <dt>Subtotal</dt><dd>${money(t.subtotal, cur)}</dd><dt>VAT</dt><dd>${money(t.vat, cur)}</dd>
           <dt class="grand">Total</dt><dd class="grand">${money(t.total, cur)}</dd>
           ${t.paid ? `<dt>Paid</dt><dd>−${money(t.paid, cur)}</dd><dt class="grand">Balance due</dt><dd class="grand">${money(t.balance, cur)}</dd>` : ''}
+          ${cur !== co.currency ? `<dt class="muted">Rate</dt><dd class="muted">1 ${cur} = ${inv.rate} ${co.currency}</dd>` : ''}
         </dl>
       </div>
     </article>
@@ -242,6 +290,9 @@ export function mount(root, params) {
   if (!inv) return;
   root.querySelector('[data-edit]').addEventListener('click', () => openInvoiceForm(inv));
   root.querySelector('[data-print]').addEventListener('click', () => window.print());
+  root.querySelector('[data-recurring]').addEventListener('click', () => openRecurringForm(null, inv));
+  root.querySelector('[data-send]').addEventListener('click', () => setTimeout(() => store.upsert('invoices', { ...inv, sentAt: today(), draft: false }), 300));
+  root.querySelector('[data-remind]')?.addEventListener('click', () => setTimeout(() => store.upsert('invoices', { ...inv, lastReminder: today() }), 300));
   root.querySelector('[data-pay]')?.addEventListener('click', () => openPaymentForm(inv));
   root.querySelector('[data-delete]').addEventListener('click', () => {
     if ((inv.payments || []).some((p) => p.bankTxnId)) return toast('Undo the bank match first (Banking → Categorised)');

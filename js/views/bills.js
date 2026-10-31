@@ -10,7 +10,7 @@ let currentFilter = 'unpaid';
 
 function lineRow(l) {
   return `<tr class="line">
-    <td><select data-k="category">${store.EXPENSE_CATEGORIES.map((c) => `<option ${c === l.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></td>
+    <td><select data-k="category">${store.expenseCategories().map((c) => `<option ${c === l.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></td>
     <td><input data-k="description" value="${esc(l.description)}" placeholder="Description"></td>
     <td><input data-k="amount" type="number" step="0.01" value="${l.amount}"></td>
     <td><input data-k="vatRate" type="number" step="any" min="0" value="${l.vatRate}"></td>
@@ -34,6 +34,7 @@ export function openBillForm(existing, preset = {}) {
         { name: 'number', label: 'Bill no. / reference' },
         { name: 'date', label: 'Bill date', type: 'date', required: true },
         { name: 'dueDate', label: 'Due date', type: 'date', required: true },
+        { name: 'projectId', label: 'Project', type: 'select', options: [['', '— None —'], ...s.projects.map((p) => [p.id, p.name])] },
       ], bill)}
       <button type="button" class="link-btn" data-add-vendor>+ Add new supplier</button>
       <div class="table-scroll"><table class="table lines">
@@ -89,6 +90,7 @@ function openPayBill(bill) {
       { name: 'date', label: 'Payment date', type: 'date', value: today(), required: true },
       { name: 'amount', label: 'Amount', type: 'number', step: '0.01', value: t.balance, required: true },
       { name: 'method', label: 'Method', type: 'select', options: ['Bank transfer', 'Card', 'Direct debit', 'Cash', 'Cheque'] },
+      { name: 'accountId', label: 'Paid from', type: 'select', options: store.bankAccounts().map((a) => [a.id, a.name]) },
     ])}<footer class="modal-foot"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Save payment</button></footer></form>`,
     onMount: (m) => m.querySelector('form').addEventListener('submit', (e) => {
       e.preventDefault();

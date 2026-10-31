@@ -1,7 +1,7 @@
 import * as store from '../store.js';
 import { money, esc, fmtDate, icon, round2 } from '../utils.js';
 import { toast, confirmDialog, emptyState, searchBox, bindFilter, badge } from '../ui.js';
-import { openInvoiceForm } from './invoices.js';
+import { openInvoiceForm, docHeader } from './invoices.js';
 
 export const title = 'Estimates';
 
@@ -25,7 +25,7 @@ export function render(params) {
 function renderDetail(id) {
   const est = store.find('estimates', id);
   if (!est) return emptyState('Estimate not found.');
-  const co = store.get().company, cur = co.currency;
+  const co = store.get().company, cur = store.invoiceCurrency(est);
   const c = store.find('customers', est.customerId) || {};
   const t = store.invoiceTotals(est);
   const st = store.estimateStatus(est);
@@ -43,11 +43,7 @@ function renderDetail(id) {
       </div>
     </div>
     <article class="card invoice-doc">
-      <header class="doc-head">
-        <div><h2>${esc(co.name)}</h2><p class="pre muted">${esc(co.address)}</p>
-          <p class="muted">${[co.email, co.phone].filter(Boolean).map(esc).join(' · ')}</p></div>
-        <div class="right"><h1>ESTIMATE</h1><p>E-${esc(est.number)}</p></div>
-      </header>
+      ${docHeader(co, 'ESTIMATE', 'E-' + est.number)}
       <section class="doc-meta">
         <div><span class="muted">Prepared for</span><strong>${esc(c.name || '—')}</strong><p class="pre">${esc(c.address || '')}</p></div>
         <dl><dt>Date</dt><dd>${fmtDate(est.date)}</dd><dt>Valid until</dt><dd>${fmtDate(est.dueDate)}</dd></dl>
