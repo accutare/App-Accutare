@@ -1,5 +1,6 @@
 // App shell: hash router + navigation.
 import * as store from './store.js';
+import * as sync from './sync.js';
 import { icon } from './utils.js';
 import * as dashboard from './views/dashboard.js';
 import * as invoices from './views/invoices.js';
@@ -113,9 +114,15 @@ function route() {
   view.mount?.(main, { id }, app);
 }
 
-function init() {
-  store.load();
+async function init() {
+  const mode = await sync.start();
+  if (mode === 'online') { await sync.loadIntoStore(); sync.attach(); } else store.load();
   renderNav();
+  const who = document.getElementById('who');
+  if (sync.isOnline()) {
+    who.innerHTML = `<span>${sync.user().name || sync.user().email}</span><small>${sync.user().role}${sync.canWrite() ? '' : ' · read-only'}</small>`;
+    if (!sync.canWrite()) document.body.classList.add('read-only');
+  } else who.innerHTML = '<small>Local mode · data stays in this browser</small>';
   document.getElementById('new-btn').innerHTML = `${icon('plus')}<span>New</span>`;
   const menu = document.getElementById('new-menu');
   document.getElementById('new-btn').addEventListener('click', (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; });

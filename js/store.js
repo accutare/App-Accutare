@@ -95,7 +95,17 @@ export const get = () => state;
 const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* storage unavailable: keep in memory */ } };
 
 let version = 0;
-export function save() { version++; persist(); listeners.forEach((fn) => fn()); }
+let remote = null;
+export function setRemote(fn) { remote = fn; }
+export function save() { version++; persist(); remote?.(state); listeners.forEach((fn) => fn()); }
+/** Replace everything with data from the server (does not push back). */
+export function replaceState(data) {
+  state = migrate(data);
+  const created = runRecurring(state);
+  version++; persist();
+  if (created) remote?.(state);
+  listeners.forEach((fn) => fn());
+}
 export const journal = () => L.journal(state, version);
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 

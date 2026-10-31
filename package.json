@@ -1,0 +1,11 @@
+{
+  "name": "accutare",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Accounting app for small businesses",
+  "scripts": {
+    "start": "node server/server.js"
+  },
+  "engines": { "node": ">=18" }
+}

@@ -1,6 +1,8 @@
 import * as store from '../store.js';
 import { fields, readForm, toast, confirmDialog } from '../ui.js';
 import { compressImage } from '../receipts.js';
+import * as sync from '../sync.js';
+import { esc } from '../utils.js';
 
 export const title = 'Settings';
 
@@ -40,9 +42,15 @@ export function render() {
       <footer class="modal-foot"><button class="btn primary">Save branding</button></footer>
     </form>
 
+    ${sync.isOnline() ? `<div class="card" data-team><h3>Team & sign-in</h3>
+      <p class="muted">Signed in as <strong>${esc(sync.user().email)}</strong> (${sync.user().role}). Company books are saved to your server and shared with your team.</p>
+      <div data-users class="muted">Loading users…</div>
+      <div class="actions wrap" style="margin-top:12px"><button class="btn" data-password>Change password</button><button class="btn" data-signout>Sign out</button></div>
+    </div>` : `<div class="card"><h3>Team & sign-in</h3><p class="muted">You are in <strong>local mode</strong>: data lives only in this browser. To sign in, share the books with your team and access them from any device, run the Accutare server (see README: <code>npm start</code>).</p></div>`}
+
     <div class="card">
       <h3>Data</h3>
-      <p class="muted">Your data is stored in this browser only. Export a backup regularly.</p>
+      <p class="muted">${sync.isOnline() ? 'Your books are saved on the server (with a daily backup). You can also download a copy.' : 'Your data is stored in this browser only. Export a backup regularly.'}</p>
       <div class="actions wrap">
         <button class="btn" data-export>Export backup (JSON)</button>
         <label class="btn">Import backup<input type="file" accept="application/json" data-import hidden></label>
@@ -67,6 +75,7 @@ export function mount(root) {
     try { store.updateCompany({ logo: await compressImage(e.target.files[0], 400, 0.85) }); toast('Logo saved'); } catch (err) { toast(err.message); }
   });
   root.querySelector('[data-rm-logo]')?.addEventListener('click', () => store.updateCompany({ logo: '' }));
+  if (sync.isOnline()) mountTeam(root);
   root.querySelector('[data-export]').addEventListener('click', () => {
     const blob = new Blob([store.exportJSON()], { type: 'application/json' });
     const a = Object.assign(document.createElement('a'), {
@@ -85,5 +94,44 @@ export function mount(root) {
   });
   root.querySelector('[data-reset]').addEventListener('click', () => {
     if (confirmDialog('Erase ALL data? This cannot be undone.')) { store.reset(false); toast('All data erased'); }
+  });
+}
+
+const ROLE_LABEL = { owner: 'Owner', admin: 'Admin (full access + users)', standard: 'Standard (full access)', accountant: 'Accountant', viewer: 'Viewer (read-only)' };
+
+async function mountTeam(root) {
+  const box = root.querySelector('[data-users]');
+  const draw = async () => {
+    const r = await sync.api('GET', 'api/users');
+    if (r.status !== 200) { box.textContent = r.error || 'Could not load users'; return; }
+    box.innerHTML = `<table class="table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead><tbody>${r.users.map((u) => `<tr>
+      <td>${esc(u.name || '—')}</td><td>${esc(u.email)}</td>
+      <td>${r.canManage && u.role !== 'owner' ? `<select data-role="${u.id}">${Object.entries(ROLE_LABEL).filter(([k]) => k !== 'owner').map(([k, l]) => `<option value="${k}" ${k === u.role ? 'selected' : ''}>${l}</option>`).join('')}</select>` : ROLE_LABEL[u.role]}</td>
+      <td>${r.canManage && u.role !== 'owner' ? `<button class="btn sm" data-toggle="${u.id}" data-disabled="${u.disabled ? '' : '1'}">${u.disabled ? 'Enable' : 'Disable'}</button>` : ''}</td></tr>`).join('')}</tbody></table>
+      ${r.canManage ? `<form class="invite" data-invite>${fields([
+        { name: 'name', label: 'Name' }, { name: 'email', label: 'Email', type: 'email', required: true },
+        { name: 'password', label: 'Temporary password (min 8)', type: 'text', required: true },
+        { name: 'role', label: 'Role', type: 'select', options: Object.entries(ROLE_LABEL).filter(([k]) => k !== 'owner') }])}
+        <footer class="modal-foot"><button class="btn primary">Add user</button></footer></form>` : ''}`;
+    box.querySelectorAll('[data-role]').forEach((sel) => sel.addEventListener('change', async () => {
+      const x = await sync.api('PATCH', 'api/users', { id: sel.dataset.role, role: sel.value }); toast(x.error || 'Role updated');
+    }));
+    box.querySelectorAll('[data-toggle]').forEach((b) => b.addEventListener('click', async () => {
+      const x = await sync.api('PATCH', 'api/users', { id: b.dataset.toggle, disabled: !!b.dataset.disabled }); toast(x.error || 'Updated'); draw();
+    }));
+    box.querySelector('[data-invite]')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const x = await sync.api('POST', 'api/users', readForm(e.target));
+      if (x.error) return toast(x.error);
+      toast('User added — send them the email and temporary password'); draw();
+    });
+  };
+  draw();
+  root.querySelector('[data-signout]').addEventListener('click', () => sync.signOut());
+  root.querySelector('[data-password]').addEventListener('click', async () => {
+    const current = prompt('Current password'); if (!current) return;
+    const password = prompt('New password (min 8 characters)'); if (!password) return;
+    const x = await sync.api('POST', 'api/password', { current, password });
+    toast(x.error || 'Password changed');
   });
 }
