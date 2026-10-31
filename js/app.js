@@ -4,6 +4,7 @@ import * as sync from './sync.js';
 import { icon } from './utils.js';
 import { toast } from './ui.js';
 import { mountSearch } from './search.js';
+import { startI18n } from './i18n.js';
 
 /** Which screens each role can open (null = everything). */
 const ACCESS = {
@@ -149,6 +150,7 @@ function route() {
 }
 
 async function init() {
+  startI18n();
   const mode = await sync.start();
   let localCompanies = [];
   if (mode === 'online') { await sync.loadIntoStore(); sync.attach(); } else {

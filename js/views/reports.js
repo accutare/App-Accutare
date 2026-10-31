@@ -2,7 +2,7 @@ import * as store from '../store.js';
 import * as L from '../ledger.js';
 import { depreciationSchedule } from '../ledger.js';
 import { budgetMonths } from './budgets.js';
-import { money, today, esc, icon, fmtDate, round2, addDays, lineNet } from '../utils.js';
+import { money, today, esc, icon, fmtDate, round2, addDays, lineNet, LOCALE } from '../utils.js';
 import { toast } from '../ui.js';
 
 export const title = 'Reports';
@@ -91,7 +91,7 @@ const REPORTS = {
     let d = range[0].slice(0, 7);
     while (d <= range[1].slice(0, 7) && months.length < 24) { months.push(d); const x = new Date(d + '-01T00:00:00'); x.setMonth(x.getMonth() + 1); d = x.toISOString().slice(0, 7); }
     const data = months.map((mo) => { const end = new Date(Number(mo.slice(0, 4)), Number(mo.slice(5)), 0); return store.profitAndLoss(mo + '-01', `${mo}-${String(end.getDate()).padStart(2, '0')}`); });
-    const lab = (mo) => new Date(mo + '-01T00:00:00').toLocaleDateString('en-GB', { month: 'short', year: '2-digit' });
+    const lab = (mo) => new Date(mo + '-01T00:00:00').toLocaleDateString(LOCALE, { month: 'short', year: '2-digit' });
     return `<div class="table-scroll">${table(['', ...months.map(lab)], [
       row(['Income', ...data.map((p) => m(p.totalIncome))]), row(['Expenses', ...data.map((p) => m(p.totalExpenses))]),
       `<tr class="grand"><td>Net profit</td>${data.map((p) => `<td class="num">${m(p.net)}</td>`).join('')}</tr>`])}</div>`;

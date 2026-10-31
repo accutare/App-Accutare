@@ -1,5 +1,5 @@
 import * as store from '../store.js';
-import { money, esc, fmtDate, today, monthKey, icon } from '../utils.js';
+import { money, esc, fmtDate, today, monthKey, icon, LOCALE } from '../utils.js';
 import { badge } from '../ui.js';
 
 export const title = 'Dashboard';
@@ -27,7 +27,7 @@ function chart(months, cur) {
   const bars = data.map((d, i) => {
     const x = pad + i * gw + gw / 2;
     const hi = (d.income / max) * (H - 40), he = (d.expense / max) * (H - 40);
-    const label = new Date(d.m + '-01T00:00:00').toLocaleDateString('en-GB', { month: 'short' });
+    const label = new Date(d.m + '-01T00:00:00').toLocaleDateString(LOCALE, { month: 'short' });
     return `
       <rect class="bar-income" x="${x - bw - 2}" y="${H - 20 - hi}" width="${bw}" height="${hi}" rx="3"><title>Income ${label}: ${money(d.income, cur)}</title></rect>
       <rect class="bar-expense" x="${x + 2}" y="${H - 20 - he}" width="${bw}" height="${he}" rx="3"><title>Expenses ${label}: ${money(d.expense, cur)}</title></rect>

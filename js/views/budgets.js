@@ -1,5 +1,5 @@
 import * as store from '../store.js';
-import { money, esc, round2, icon } from '../utils.js';
+import { money, esc, round2, icon, LOCALE } from '../utils.js';
 import { toast, confirmDialog, emptyState } from '../ui.js';
 
 export const title = 'Budgets';
@@ -24,7 +24,7 @@ export function render() {
   if (!b) return head + emptyState('No budgets yet. Create one for your financial year.');
   const months = budgetMonths(b);
   const accts = s.accounts.filter((a) => ['income', 'other_income', 'cost_of_sales', 'expense'].includes(a.type) && !a.inactive);
-  const lab = (m) => new Date(m + '-01T00:00:00').toLocaleDateString('en-GB', { month: 'short' });
+  const lab = (m) => new Date(m + '-01T00:00:00').toLocaleDateString(LOCALE, { month: 'short' });
   return head + `<p class="muted">Type an annual figure in “Year” to spread it evenly, or fill each month. Saved automatically.</p>
     <div class="card table-card"><div class="table-scroll" style="margin:0"><table class="table budget-grid"><thead><tr><th>Account</th><th class="num">Year</th>${months.map((m) => `<th class="num">${lab(m)}</th>`).join('')}</tr></thead>
     <tbody>${accts.map((a) => { const v = b.amounts?.[a.id] || Array(12).fill(0); return `<tr data-acc="${a.id}"><td>${esc(a.name)}</td><td><input type="number" step="1" data-year value="${round2(v.reduce((x, y) => x + y, 0)) || ''}"></td>

@@ -20,8 +20,12 @@ export const addDays = (date, days) => {
   return d.toISOString().slice(0, 10);
 };
 
+/** Locale used for dates (follows the language setting). Money always uses en-GB/£ formatting. */
+export let LOCALE = 'en-GB';
+export const setLocale = (l) => { LOCALE = l; };
+
 export const fmtDate = (d) =>
-  d ? new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+  d ? new Date(d + 'T00:00:00').toLocaleDateString(LOCALE, { day: '2-digit', month: 'short', year: 'numeric' }) : '';
 
 export const monthKey = (d) => d.slice(0, 7);
 

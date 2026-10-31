@@ -2,13 +2,16 @@ import * as store from '../store.js';
 import { fields, readForm, toast, confirmDialog } from '../ui.js';
 import { compressImage } from '../receipts.js';
 import * as sync from '../sync.js';
-import { esc } from '../utils.js';
+import { LANGS, getLang, setLang } from '../i18n.js';
+import { esc, LOCALE } from '../utils.js';
 
 export const title = 'Settings';
 
 export function render() {
   const co = store.get().company;
   return `
+    <div class="card"><h3>Language</h3><label class="field"><span>Language</span><select data-lang>${LANGS.map(([k, l]) => `<option value="${k}" ${k === getLang() ? 'selected' : ''}>${l}</option>`).join('')}</select></label></div>
+
     <form class="card" data-company>
       <h3>Company details</h3>
       ${fields([
@@ -22,7 +25,7 @@ export function render() {
         { name: 'paymentTerms', label: 'Payment terms (days)', type: 'number' },
         { name: 'nextInvoiceNumber', label: 'Next invoice number', type: 'number' },
         { name: 'nextEstimateNumber', label: 'Next estimate number', type: 'number' },
-        { name: 'fyStartMonth', label: 'Financial year starts (month)', type: 'select', options: [...Array(12)].map((_, i) => [i + 1, new Date(2000, i, 1).toLocaleDateString('en-GB', { month: 'long' })]) },
+        { name: 'fyStartMonth', label: 'Financial year starts (month)', type: 'select', options: [...Array(12)].map((_, i) => [i + 1, new Date(2000, i, 1).toLocaleDateString(LOCALE, { month: 'long' })]) },
         { name: 'fyStartDay', label: 'Financial year starts (day)', type: 'number' },
         { name: 'hourlyRate', label: 'Default hourly rate', type: 'number', step: '0.01' },
         { name: 'reminderDays', label: 'Days between payment reminders', type: 'number' },
@@ -72,6 +75,7 @@ export async function sha256(text) {
 }
 
 export function mount(root) {
+  root.querySelector('[data-lang]').addEventListener('change', (e) => { setLang(e.target.value); location.reload(); });
   root.querySelector('[data-company]').addEventListener('submit', async (e) => {
     e.preventDefault();
     const d = readForm(e.target);
