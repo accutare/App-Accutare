@@ -1,6 +1,6 @@
 import * as store from '../store.js';
 import * as L from '../ledger.js';
-import { money, today, esc, icon, fmtDate, round2, addDays } from '../utils.js';
+import { money, today, esc, icon, fmtDate, round2, addDays, lineNet } from '../utils.js';
 
 export const title = 'Reports';
 
@@ -143,7 +143,7 @@ const REPORTS = {
     const s = store.get(); const by = {};
     for (const i of s.invoices.filter((x) => !x.draft && x.date >= range[0] && x.date <= range[1])) for (const l of i.lines) {
       const k = store.find('products', l.productId)?.name || l.description || 'Other';
-      const r = (by[k] ||= { qty: 0, amt: 0 }); r.qty += Number(l.qty); r.amt += round2(l.qty * l.price * store.rateOf(i));
+      const r = (by[k] ||= { qty: 0, amt: 0 }); r.qty += Number(l.qty); r.amt += round2(lineNet(l) * store.rateOf(i));
     }
     return table(['Product / service', 'Qty', 'Amount'], Object.entries(by).sort((a, b) => b[1].amt - a[1].amt).map(([k, v]) => row([esc(k), round2(v.qty), m(v.amt)])));
   },

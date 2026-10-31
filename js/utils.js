@@ -6,6 +6,9 @@ export const esc = (s) =>
 
 export const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
+/** Net amount of a sales line after its % discount. */
+export const lineNet = (l) => round2((Number(l.qty) || 0) * (Number(l.price) || 0) * (1 - (Number(l.discount) || 0) / 100));
+
 export const money = (n, currency = 'GBP') =>
   new Intl.NumberFormat('en-GB', { style: 'currency', currency }).format(Number(n) || 0);
 

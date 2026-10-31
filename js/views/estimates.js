@@ -1,7 +1,8 @@
 import * as store from '../store.js';
+import { lineNet } from '../utils.js';
 import { money, esc, fmtDate, icon, round2 } from '../utils.js';
 import { toast, confirmDialog, emptyState, searchBox, bindFilter, badge } from '../ui.js';
-import { openInvoiceForm, docHeader } from './invoices.js';
+import { openInvoiceForm, docHeader, docLines } from './invoices.js';
 
 export const title = 'Estimates';
 
@@ -48,11 +49,7 @@ function renderDetail(id) {
         <div><span class="muted">Prepared for</span><strong>${esc(c.name || '—')}</strong><p class="pre">${esc(c.address || '')}</p></div>
         <dl><dt>Date</dt><dd>${fmtDate(est.date)}</dd><dt>Valid until</dt><dd>${fmtDate(est.dueDate)}</dd></dl>
       </section>
-      <table class="table">
-        <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">VAT</th><th class="num">Amount</th></tr></thead>
-        <tbody>${est.lines.map((l) => `<tr><td>${esc(l.description)}</td><td class="num">${l.qty}</td><td class="num">${money(l.price, cur)}</td>
-          <td class="num">${l.vatRate}%</td><td class="num">${money(round2(l.qty * l.price), cur)}</td></tr>`).join('')}</tbody>
-      </table>
+      ${docLines(est.lines, cur)}
       <div class="doc-foot"><p class="pre">${esc(est.notes)}</p>
         <dl class="totals"><dt>Subtotal</dt><dd>${money(t.subtotal, cur)}</dd><dt>VAT</dt><dd>${money(t.vat, cur)}</dd>
         <dt class="grand">Total</dt><dd class="grand">${money(t.total, cur)}</dd></dl></div>

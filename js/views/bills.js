@@ -18,7 +18,10 @@ function lineRow(l) {
   </tr>`;
 }
 
-export function openBillForm(existing, preset = {}) {
+export function openBillForm(existing, preset = {}, kind = 'bill') {
+  const isCredit = kind === 'vendorCredit';
+  const coll = isCredit ? 'vendorCredits' : 'bills';
+  const label = isCredit ? 'Supplier credit' : 'Bill';
   const s = store.get();
   const co = s.company;
   const bill = existing ? structuredClone(existing) : {
@@ -27,13 +30,13 @@ export function openBillForm(existing, preset = {}) {
   };
   const vendors = [...s.vendors].sort((a, b) => a.name.localeCompare(b.name));
   openModal({
-    title: existing ? 'Edit bill' : 'New bill', wide: true,
+    title: existing ? `Edit ${label.toLowerCase()}` : `New ${label.toLowerCase()}`, wide: true,
     body: `<form>
       ${fields([
         { name: 'vendorId', label: 'Supplier', type: 'select', required: true, options: [['', 'Select a supplier…'], ...vendors.map((v) => [v.id, v.name])] },
         { name: 'number', label: 'Bill no. / reference' },
         { name: 'date', label: 'Bill date', type: 'date', required: true },
-        { name: 'dueDate', label: 'Due date', type: 'date', required: true },
+        ...(isCredit ? [] : [{ name: 'dueDate', label: 'Due date', type: 'date', required: true }]),
         { name: 'projectId', label: 'Project', type: 'select', options: [['', '— None —'], ...s.projects.map((p) => [p.id, p.name])] },
       ], bill)}
       <button type="button" class="link-btn" data-add-vendor>+ Add new supplier</button>
@@ -42,7 +45,7 @@ export function openBillForm(existing, preset = {}) {
         <tbody>${bill.lines.map(lineRow).join('')}</tbody></table></div>
       <button type="button" class="btn ghost" data-add-line>${icon('plus', 16)} Add line</button>
       <div class="form-bottom">${fields([{ name: 'notes', label: 'Memo', type: 'textarea', full: true, rows: 2 }], bill)}<dl class="totals" data-totals></dl></div>
-      <footer class="modal-foot"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Save bill</button></footer>
+      <footer class="modal-foot"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Save ${label.toLowerCase()}</button></footer>
     </form>`,
     onMount(m) {
       const form = m.querySelector('form');
@@ -66,16 +69,16 @@ export function openBillForm(existing, preset = {}) {
       });
       form.querySelector('[data-add-vendor]').addEventListener('click', () => {
         const draft = { ...bill, ...readForm(form), lines: readLines() };
-        openVendorForm(null, (v) => openBillForm(existing ? { ...existing, ...draft, vendorId: v.id } : null, { vendorId: v.id }));
+        openVendorForm(null, (v) => openBillForm(existing ? { ...existing, ...draft, vendorId: v.id } : null, { vendorId: v.id }, kind));
       });
       form.addEventListener('submit', (e) => {
         e.preventDefault();
         const lines = readLines().filter((l) => l.amount);
         if (!lines.length) return toast('Add at least one line with an amount');
-        const saved = store.upsert('bills', { ...bill, ...readForm(form), lines });
+        const saved = store.upsert(coll, { ...bill, ...readForm(form), lines });
         closeModal();
-        toast('Bill saved');
-        location.hash = `#/bills/${saved.id}`;
+        toast(`${label} saved`);
+        location.hash = isCredit ? '#/vendorcredits' : `#/bills/${saved.id}`;
       });
       recalc();
     },
@@ -117,7 +120,7 @@ export function render(params) {
   const rows = s.bills.filter(matches).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
   const toPay = s.bills.reduce((a, b) => a + store.billTotals(b).balance, 0);
   return `
-    <div class="toolbar">${searchBox('Search bills')}<button class="btn primary" data-new>${icon('plus')} New bill</button></div>
+    <div class="toolbar">${searchBox('Search bills')}<div class="actions wrap"><a class="btn" href="#/purchaseorders">Purchase orders</a><a class="btn" href="#/vendorcredits">Supplier credits</a><a class="btn" href="#/paybills">Pay bills</a><button class="btn primary" data-new>${icon('plus')} New bill</button></div></div>
     <p class="muted">Total to pay: <strong>${money(round2(toPay), cur)}</strong></p>
     <div class="tabs">${FILTERS.map(([k, l]) => `<button class="tab ${k === currentFilter ? 'active' : ''}" data-filter-status="${k}">${l}</button>`).join('')}</div>
     ${rows.length ? `<div class="card table-card"><table class="table">
@@ -140,6 +143,7 @@ function renderDetail(id) {
         <p class="muted">Dated ${fmtDate(b.date)} · due ${fmtDate(b.dueDate)}</p>${badge(store.billStatus(b))}</div>
       <div class="right"><span class="muted">Balance</span><strong class="big">${money(t.balance, cur)}</strong>
         <div class="actions"><button class="btn danger" data-delete>${icon('trash', 16)}</button><button class="btn" data-edit>Edit</button>
+        ${t.balance > 0 && store.get().vendorCredits.some((c) => c.vendorId === b.vendorId && store.vendorCreditTotals(c).available > 0) ? '<button class="btn" data-apply-credit>Apply supplier credit</button>' : ''}
         ${t.balance > 0 ? '<button class="btn primary" data-pay>Pay bill</button>' : ''}</div></div>
     </div>
     <div class="card table-card"><table class="table">
@@ -148,7 +152,7 @@ function renderDetail(id) {
       <tfoot><tr><td colspan="3">Subtotal</td><td class="num">${money(t.subtotal, cur)}</td></tr><tr><td colspan="3">VAT</td><td class="num">${money(t.vat, cur)}</td></tr>
       <tr><td colspan="3"><strong>Total</strong></td><td class="num"><strong>${money(t.total, cur)}</strong></td></tr></tfoot></table></div>
     ${(b.payments || []).length ? `<div class="card"><h3>Payments</h3><ul class="list">${b.payments.map((p) => `<li><div><strong>${money(p.amount, cur)}</strong>
-      <small>${fmtDate(p.date)} · ${esc(p.method)}</small></div>${p.bankTxnId ? '<small class="muted">From bank</small>' : `<button class="icon-btn" data-del-payment="${p.id}" aria-label="Delete payment">${icon('trash', 16)}</button>`}</li>`).join('')}</ul></div>` : ''}`;
+      <small>${fmtDate(p.date)} · ${esc(p.method)}</small></div>${p.bankTxnId && !p.vendorCreditId ? '<small class="muted">From bank</small>' : `<button class="icon-btn" data-del-payment="${p.id}" aria-label="Delete payment">${icon('trash', 16)}</button>`}</li>`).join('')}</ul></div>` : ''}`;
 }
 
 export function mount(root, params) {
@@ -163,6 +167,11 @@ export function mount(root, params) {
   if (!b) return;
   root.querySelector('[data-edit]').addEventListener('click', () => openBillForm(b));
   root.querySelector('[data-pay]')?.addEventListener('click', () => openPayBill(b));
+  root.querySelector('[data-apply-credit]')?.addEventListener('click', () => {
+    let left = store.billTotals(b).balance, used = 0;
+    for (const vc of store.get().vendorCredits.filter((c) => c.vendorId === b.vendorId)) { if (left <= 0) break; const a = store.applyVendorCredit(vc, b.id, left); left -= a; used += a; }
+    toast(`${money(used)} of supplier credit applied`);
+  });
   root.querySelector('[data-delete]').addEventListener('click', () => {
     if ((b.payments || []).some((p) => p.bankTxnId)) return toast('Undo the bank match first');
     if (confirmDialog('Delete this bill?')) { store.remove('bills', b.id); location.hash = '#/bills'; }

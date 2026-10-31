@@ -1,6 +1,6 @@
 // Data layer. Everything lives in localStorage so the app works offline with no backend.
 // Swap these functions for API calls later if you add a server.
-import { uid, today, addDays, round2 } from './utils.js';
+import { uid, today, addDays, round2, lineNet } from './utils.js';
 import * as L from './ledger.js';
 import { runRecurring } from './recurring.js';
 
@@ -31,6 +31,9 @@ function defaults() {
       vatScheme: 'standard',
       mileageVehicle: 'car',
       nextJournalNumber: 1,
+      nextCreditNumber: 1,
+      nextReceiptNumber: 1,
+      nextPONumber: 1,
     },
     accounts: [...L.defaultAccounts(), bankAccountDefaults()],
     journals: [],
@@ -41,6 +44,10 @@ function defaults() {
     employees: [],
     payRuns: [],
     stockAdjustments: [],
+    creditNotes: [],
+    salesReceipts: [],
+    vendorCredits: [],
+    purchaseOrders: [],
     vatReturns: [],
     users: [],
     customers: [],
@@ -155,7 +162,7 @@ export function reset(withDemo) {
 export function invoiceTotals(inv) {
   let subtotal = 0, vat = 0;
   for (const l of inv.lines || []) {
-    const net = round2((Number(l.qty) || 0) * (Number(l.price) || 0));
+    const net = lineNet(l);
     subtotal += net;
     vat += round2(net * (Number(l.vatRate) || 0) / 100);
   }
@@ -186,9 +193,46 @@ export function invoiceStatus(inv) {
 export function customerName(id) { return find('customers', id)?.name || '—'; }
 
 export function customerBalance(id) {
+  const credits = state.creditNotes.filter((c) => c.customerId === id).reduce((s, c) => s + creditTotals(c).available, 0);
   return round2(state.invoices
     .filter((i) => i.customerId === id && !i.draft)
-    .reduce((s, i) => s + invoiceTotalsHome(i).balance, 0));
+    .reduce((s, i) => s + invoiceTotalsHome(i).balance, 0) - credits);
+}
+
+// ---------- Credit notes & customer deposits ----------
+
+/** total, applied to invoices, refunded and still available. */
+export function creditTotals(cn) {
+  const total = cn.type === 'deposit' ? round2(cn.amount) : invoiceTotals({ lines: cn.lines, payments: [] }).total;
+  const applied = round2(state.invoices.flatMap((i) => i.payments || []).filter((p) => p.creditId === cn.id).reduce((s, p) => s + Number(p.amount), 0));
+  const refunded = round2((cn.refunds || []).reduce((s, r) => s + Number(r.amount), 0));
+  return { total, applied, refunded, available: round2(total - applied - refunded) };
+}
+
+export function applyCredit(cn, invoiceId, amount) {
+  const inv = find('invoices', invoiceId);
+  const amt = round2(Math.min(amount, creditTotals(cn).available, invoiceTotals(inv).balance));
+  if (amt <= 0) return 0;
+  upsert('invoices', { ...inv, draft: false, payments: [...(inv.payments || []), { id: uid(), date: today(), amount: amt, method: cn.type === 'deposit' ? 'Payment on account' : `Credit note ${cn.number}`, creditId: cn.id }] });
+  return amt;
+}
+
+/** Receive one payment from a customer and spread it over their oldest invoices. Any excess is kept as a credit on account. */
+export function receiveCustomerPayment(customerId, { date, amount, accountId, method }, invoiceIds) {
+  let left = round2(amount);
+  const open = state.invoices.filter((i) => i.customerId === customerId && !i.draft && invoiceTotals(i).balance > 0 && (!invoiceIds || invoiceIds.includes(i.id)))
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  for (const inv of open) {
+    if (left <= 0) break;
+    const amt = round2(Math.min(left, invoiceTotals(inv).balance));
+    upsert('invoices', { ...inv, payments: [...(inv.payments || []), { id: uid(), date, amount: amt, method, accountId }] });
+    left = round2(left - amt);
+  }
+  if (left > 0) {
+    upsert('creditNotes', { type: 'deposit', customerId, date, amount: left, accountId, method, number: `D-${state.company.nextCreditNumber}`, refunds: [] });
+    state.company.nextCreditNumber += 1; save();
+  }
+  return left;
 }
 
 export function expenseNet(e) { return round2(Number(e.amount || 0) - Number(e.vat || 0)); }
@@ -210,11 +254,18 @@ export function vatReturn(from, to) {
   for (const i of state.invoices.filter((x) => !x.draft && inRange(x.date))) {
     const t = invoiceTotalsHome(i); box1 += t.vat; box6 += t.subtotal;
   }
+  for (const sr of state.salesReceipts.filter((x) => inRange(x.date))) {
+    const t = invoiceTotals({ lines: sr.lines, payments: [] }); box1 += t.vat; box6 += t.subtotal;
+  }
+  for (const cn of state.creditNotes.filter((x) => x.type !== 'deposit' && inRange(x.date))) {
+    const t = invoiceTotals({ lines: cn.lines, payments: [] }); box1 -= t.vat; box6 -= t.subtotal;
+  }
   for (const r of state.otherIncome.filter((x) => inRange(x.date))) {
     box1 += Number(r.vat || 0);
     if (r.category === 'Sales' || Number(r.vat)) box6 += Number(r.amount) - Number(r.vat || 0);
   }
   for (const c of costEntries().filter((x) => inRange(x.date))) { box4 += c.vat; box7 += c.net; }
+  for (const vc of state.vendorCredits.filter((x) => inRange(x.date))) { const t = billTotals({ lines: vc.lines, payments: [] }); box4 -= t.vat; box7 -= t.subtotal; }
   box1 = round2(box1); box4 = round2(box4);
   const box2 = 0, box3 = round2(box1 + box2), box5 = round2(box3 - box4);
   return { box1, box2, box3, box4, box5, box6: Math.floor(box6), box7: Math.floor(box7), box8: 0, box9: 0 };
@@ -238,7 +289,49 @@ export function billStatus(bill) {
 export function vendorName(id) { return find('vendors', id)?.name || '—'; }
 
 export function vendorBalance(id) {
-  return round2(state.bills.filter((b) => b.vendorId === id).reduce((s, b) => s + billTotals(b).balance, 0));
+  const credits = state.vendorCredits.filter((c) => c.vendorId === id).reduce((s, c) => s + vendorCreditTotals(c).available, 0);
+  return round2(state.bills.filter((b) => b.vendorId === id).reduce((s, b) => s + billTotals(b).balance, 0) - credits);
+}
+
+export function vendorCreditTotals(vc) {
+  const total = billTotals({ lines: vc.lines, payments: [] }).total;
+  const applied = round2(state.bills.flatMap((b) => b.payments || []).filter((p) => p.vendorCreditId === vc.id).reduce((s, p) => s + Number(p.amount), 0));
+  return { total, applied, available: round2(total - applied) };
+}
+
+export function applyVendorCredit(vc, billId, amount) {
+  const b = find('bills', billId);
+  const amt = round2(Math.min(amount, vendorCreditTotals(vc).available, billTotals(b).balance));
+  if (amt <= 0) return 0;
+  upsert('bills', { ...b, payments: [...(b.payments || []), { id: uid(), date: today(), amount: amt, method: `Supplier credit ${vc.number || ''}`, vendorCreditId: vc.id }] });
+  return amt;
+}
+
+/** Pay several bills in one go. */
+export function payBills(list, { date, accountId, method }) {
+  for (const { id, amount } of list) {
+    const b = find('bills', id);
+    if (b && amount > 0) state.bills[state.bills.indexOf(b)] = { ...b, payments: [...(b.payments || []), { id: uid(), date, amount: round2(amount), method, accountId }] };
+  }
+  save();
+}
+
+export function poTotals(po) {
+  return billTotals({ lines: po.lines.map((l) => ({ amount: round2(Number(l.qty || 0) * Number(l.price || 0)), vatRate: l.vatRate })), payments: [] });
+}
+
+/** Turn a purchase order into a bill; tracked products are added to stock. */
+export function convertPO(po) {
+  const bill = upsert('bills', {
+    vendorId: po.vendorId, number: `PO ${po.number}`, date: today(), dueDate: addDays(today(), 30), projectId: po.projectId || '', notes: po.notes || '', payments: [],
+    lines: po.lines.map((l) => ({ category: l.category, description: `${l.description}${Number(l.qty) !== 1 ? ` (${l.qty} × ${l.price})` : ''}`, amount: round2(Number(l.qty) * Number(l.price)), vatRate: l.vatRate })),
+    poId: po.id,
+  });
+  for (const l of po.lines) if (l.productId && find('products', l.productId)?.trackStock) {
+    state.stockAdjustments.push({ id: uid(), productId: l.productId, qty: Number(l.qty), reason: `Received on PO ${po.number}`, date: today() });
+  }
+  upsert('purchaseOrders', { ...po, status: 'closed', billId: bill.id });
+  return bill;
 }
 
 // ---------- Estimates ----------
@@ -389,7 +482,7 @@ export function importBankTransactions(list, accountId) {
 export function stockOnHand(productId) {
   const p = find('products', productId);
   if (!p?.trackStock) return null;
-  const sold = state.invoices.filter((i) => !i.draft).flatMap((i) => i.lines).filter((l) => l.productId === productId)
+  const sold = [...state.invoices.filter((i) => !i.draft), ...state.salesReceipts].flatMap((i) => i.lines).filter((l) => l.productId === productId)
     .reduce((s, l) => s + Number(l.qty || 0), 0);
   const adj = state.stockAdjustments.filter((a) => a.productId === productId).reduce((s, a) => s + Number(a.qty || 0), 0);
   return round2(Number(p.openingQty || 0) + adj - sold);

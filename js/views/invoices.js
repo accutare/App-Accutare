@@ -1,4 +1,5 @@
 import * as store from '../store.js';
+import { lineNet } from '../utils.js';
 import { money, esc, fmtDate, today, addDays, icon, uid, round2 } from '../utils.js';
 import { openModal, closeModal, fields, readForm, toast, confirmDialog, emptyState, searchBox, bindFilter, badge } from '../ui.js';
 import { openCustomerForm } from './customers.js';
@@ -7,6 +8,14 @@ import { openRecurringForm } from './recurring.js';
 export const CURRENCIES = ['GBP', 'EUR', 'USD', 'BRL', 'CAD', 'AUD', 'CHF', 'PLN'];
 
 /** Branded header shared by invoices and estimates. */
+export function docLines(lines, cur) {
+  const disc = lines.some((l) => Number(l.discount));
+  return `<table class="table">
+    <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th>${disc ? '<th class="num">Disc</th>' : ''}<th class="num">VAT</th><th class="num">Amount</th></tr></thead>
+    <tbody>${lines.map((l) => `<tr><td>${esc(l.description)}</td><td class="num">${l.qty}</td><td class="num">${money(l.price, cur)}</td>
+      ${disc ? `<td class="num">${Number(l.discount) ? l.discount + '%' : ''}</td>` : ''}<td class="num">${l.vatRate}%</td><td class="num">${money(lineNet(l), cur)}</td></tr>`).join('')}</tbody></table>`;
+}
+
 export function docHeader(co, label, number) {
   return `<header class="doc-head" style="--accent:${esc(co.accentColor || '#0f766e')}">
     <div>${co.logo ? `<img class="doc-logo" src="${co.logo}" alt="">` : ''}<h2>${esc(co.name)}</h2><p class="pre muted">${esc(co.address)}</p>
@@ -45,6 +54,7 @@ function lineRow(l, products) {
       <input data-k="description" value="${esc(l.description)}" placeholder="Description"></td>
     <td><input data-k="qty" type="number" step="any" min="0" value="${l.qty}"></td>
     <td><input data-k="price" type="number" step="0.01" value="${l.price}"></td>
+    <td><input data-k="discount" type="number" step="any" min="0" max="100" value="${l.discount || 0}"></td>
     <td><input data-k="vatRate" type="number" step="any" min="0" value="${l.vatRate}"></td>
     <td class="num" data-amount></td>
     <td><button type="button" class="icon-btn" data-remove aria-label="Remove line">${icon('trash', 16)}</button></td>
@@ -54,6 +64,8 @@ function lineRow(l, products) {
 const KINDS = {
   invoice: { coll: 'invoices', counter: 'nextInvoiceNumber', label: 'Invoice', due: 'Due date' },
   estimate: { coll: 'estimates', counter: 'nextEstimateNumber', label: 'Estimate', due: 'Expiry date' },
+  credit: { coll: 'creditNotes', route: 'credits', counter: 'nextCreditNumber', label: 'Credit note', noDue: true },
+  receipt: { coll: 'salesReceipts', route: 'receipts', counter: 'nextReceiptNumber', label: 'Sales receipt', noDue: true, cashSale: true },
 };
 
 export function openInvoiceForm(existing, preset = {}, kind = 'invoice') {
@@ -69,17 +81,19 @@ export function openInvoiceForm(existing, preset = {}, kind = 'invoice') {
 
   const body = `<form class="invoice-form">
     ${fields([
-      { name: 'customerId', label: 'Customer', type: 'select', required: true, options: [['', 'Select a customer…'], ...customers.map((c) => [c.id, c.name])] },
+      { name: 'customerId', label: 'Customer', type: 'select', required: !K.cashSale, options: [['', K.cashSale ? 'Cash sale (no customer)' : 'Select a customer…'], ...customers.map((c) => [c.id, c.name])] },
       { name: 'number', label: `${K.label} no.`, required: true },
       { name: 'date', label: `${K.label} date`, type: 'date', required: true },
-      { name: 'dueDate', label: K.due, type: 'date', required: true },
+      ...(K.noDue ? [] : [{ name: 'dueDate', label: K.due, type: 'date', required: true }]),
+      ...(K.cashSale ? [{ name: 'accountId', label: 'Deposit to', type: 'select', options: store.bankAccounts().map((a) => [a.id, a.name]) },
+        { name: 'method', label: 'Payment method', type: 'select', options: ['Card', 'Cash', 'Bank transfer', 'Cheque'] }] : []),
       { name: 'projectId', label: 'Project', type: 'select', options: [['', '— None —'], ...s.projects.filter((p) => p.status !== 'closed' || p.id === inv.projectId).map((p) => [p.id, p.name])] },
       { name: 'currency', label: 'Currency', type: 'select', options: CURRENCIES.includes(co.currency) ? CURRENCIES : [co.currency, ...CURRENCIES] },
       { name: 'rate', label: `Exchange rate (1 unit = ? ${co.currency})`, type: 'number', step: 'any' },
     ], { currency: co.currency, rate: 1, ...preset, ...inv })}
     <button type="button" class="link-btn" data-add-customer>+ Add new customer</button>
     <div class="table-scroll"><table class="table lines">
-      <thead><tr><th>Product / service</th><th>Qty</th><th>Rate</th><th>VAT %</th><th class="num">Amount</th><th></th></tr></thead>
+      <thead><tr><th>Product / service</th><th>Qty</th><th>Rate</th><th>Disc %</th><th>VAT %</th><th class="num">Amount</th><th></th></tr></thead>
       <tbody>${inv.lines.map((l) => lineRow(l, s.products)).join('')}</tbody>
     </table></div>
     <button type="button" class="btn ghost" data-add-line>${icon('plus', 16)} Add line</button>
@@ -110,7 +124,7 @@ export function openInvoiceForm(existing, preset = {}, kind = 'invoice') {
         if (cur === co.currency) form.elements.rate.value = 1;
         tbody.querySelectorAll('tr.line').forEach((tr, idx) => {
           const l = readLines()[idx];
-          tr.querySelector('[data-amount]').textContent = money(round2(l.qty * l.price), cur);
+          tr.querySelector('[data-amount]').textContent = money(lineNet(l), cur);
         });
         const t = store.invoiceTotals({ lines: readLines(), payments: inv.payments });
         form.querySelector('[data-totals]').innerHTML = `
@@ -152,7 +166,7 @@ export function openInvoiceForm(existing, preset = {}, kind = 'invoice') {
         form.elements.customerId.value = preset.customerId;
       }
       form.elements.date.addEventListener('change', () => {
-        form.elements.dueDate.value = addDays(form.elements.date.value, co.paymentTerms);
+        if (form.elements.dueDate) form.elements.dueDate.value = addDays(form.elements.date.value, co.paymentTerms);
       });
       form.addEventListener('submit', (e) => {
         e.preventDefault();
@@ -161,7 +175,7 @@ export function openInvoiceForm(existing, preset = {}, kind = 'invoice') {
         const lines = readLines().filter((l) => l.description || l.price);
         if (!lines.length) return toast('Add at least one line');
         const isNew = !existing;
-        if (kind === 'invoice' && e.submitter?.value !== 'draft') {
+        if ((kind === 'invoice' || kind === 'receipt') && e.submitter?.value !== 'draft') {
           const short = lines.filter((l) => { const q = store.stockOnHand(l.productId); return q !== null && l.qty > q + (existing && !existing.draft ? (existing.lines.find((x) => x.productId === l.productId)?.qty || 0) : 0); });
           if (short.length && !confirmDialog(`Not enough stock for: ${short.map((l) => l.description).join(', ')}. Save anyway?`)) return;
         }
@@ -171,7 +185,7 @@ export function openInvoiceForm(existing, preset = {}, kind = 'invoice') {
         if (isNew && Number(saved.number) >= co[K.counter]) store.updateCompany({ [K.counter]: Number(saved.number) + 1 });
         closeModal();
         toast(`${K.label} saved`);
-        location.hash = `#/${K.coll}/${saved.id}`;
+        location.hash = `#/${K.route || K.coll}/${saved.id}`;
       });
       recalc();
     },
@@ -247,6 +261,7 @@ function renderDetail(id) {
         <button class="btn" data-print>${icon('print', 16)} Print / PDF</button>
         ${st === 'overdue' ? `<a class="btn" data-remind href="${mailto(inv, true)}">Send reminder</a>` : ''}
         <a class="btn" data-send href="${mailto(inv, false)}">${inv.sentAt ? 'Resend' : 'Send'} by email</a>
+        ${t.balance > 0 && s.creditNotes.some((x) => x.customerId === inv.customerId && store.creditTotals(x).available > 0) ? '<button class="btn" data-apply-credit>Apply credit</button>' : ''}
         ${t.balance > 0 ? '<button class="btn primary" data-pay>Receive payment</button>' : ''}
       </div>
     </div>
@@ -256,11 +271,7 @@ function renderDetail(id) {
         <div><span class="muted">Bill to</span><strong>${esc(c.name || '—')}</strong><p class="pre">${esc(c.address || '')}</p></div>
         <dl><dt>Invoice date</dt><dd>${fmtDate(inv.date)}</dd><dt>Due date</dt><dd>${fmtDate(inv.dueDate)}</dd><dt>Balance due</dt><dd><strong>${money(t.balance, cur)}</strong></dd></dl>
       </section>
-      <table class="table">
-        <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">VAT</th><th class="num">Amount</th></tr></thead>
-        <tbody>${inv.lines.map((l) => `<tr><td>${esc(l.description)}</td><td class="num">${l.qty}</td><td class="num">${money(l.price, cur)}</td>
-          <td class="num">${l.vatRate}%</td><td class="num">${money(round2(l.qty * l.price), cur)}</td></tr>`).join('')}</tbody>
-      </table>
+      ${docLines(inv.lines, cur)}
       <div class="doc-foot">
         <div><p class="pre">${esc(inv.notes)}</p>
           ${co.paymentDetails ? `<div class="pay-box"><strong>How to pay</strong><p class="pre">${esc(co.paymentDetails)}</p></div>` : ''}
@@ -275,7 +286,7 @@ function renderDetail(id) {
     </article>
     ${(inv.payments || []).length ? `<div class="card no-print"><h3>Payments</h3><ul class="list">${inv.payments.map((p) => `
       <li><div><strong>${money(p.amount, cur)}</strong><small>${fmtDate(p.date)} · ${esc(p.method)}</small></div>
-      ${p.bankTxnId ? '<small class="muted">From bank</small>' : `<button class="icon-btn" data-del-payment="${p.id}" aria-label="Delete payment">${icon('trash', 16)}</button>`}</li>`).join('')}</ul></div>` : ''}`;
+      ${p.creditId ? `<button class="icon-btn" data-del-payment="${p.id}" aria-label="Remove credit">${icon('trash', 16)}</button>` : p.bankTxnId ? '<small class="muted">From bank</small>' : `<button class="icon-btn" data-del-payment="${p.id}" aria-label="Delete payment">${icon('trash', 16)}</button>`}</li>`).join('')}</ul></div>` : ''}`;
 }
 
 export function mount(root, params) {
@@ -290,6 +301,14 @@ export function mount(root, params) {
   if (!inv) return;
   root.querySelector('[data-edit]').addEventListener('click', () => openInvoiceForm(inv));
   root.querySelector('[data-print]').addEventListener('click', () => window.print());
+  root.querySelector('[data-apply-credit]')?.addEventListener('click', () => {
+    let left = store.invoiceTotals(inv).balance, used = 0;
+    for (const cn of store.get().creditNotes.filter((x) => x.customerId === inv.customerId)) {
+      if (left <= 0) break;
+      const a = store.applyCredit(cn, inv.id, left); left -= a; used += a;
+    }
+    toast(`${money(used, store.invoiceCurrency(inv))} of credit applied`);
+  });
   root.querySelector('[data-recurring]').addEventListener('click', () => openRecurringForm(null, inv));
   root.querySelector('[data-send]').addEventListener('click', () => setTimeout(() => store.upsert('invoices', { ...inv, sentAt: today(), draft: false }), 300));
   root.querySelector('[data-remind]')?.addEventListener('click', () => setTimeout(() => store.upsert('invoices', { ...inv, lastReminder: today() }), 300));

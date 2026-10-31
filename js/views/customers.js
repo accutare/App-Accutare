@@ -1,5 +1,5 @@
 import * as store from '../store.js';
-import { money, esc, fmtDate, icon } from '../utils.js';
+import { money, esc, fmtDate, icon, today } from '../utils.js';
 import { openModal, closeModal, fields, readForm, toast, confirmDialog, emptyState, searchBox, bindFilter, badge } from '../ui.js';
 
 export const title = 'Customers';
@@ -56,7 +56,7 @@ function renderDetail(id) {
         <p class="muted">${[c.email, c.phone].filter(Boolean).map(esc).join(' · ')}</p>
         <p class="pre">${esc(c.address)}</p></div>
       <div class="right"><span class="muted">Open balance</span><strong class="big">${money(store.customerBalance(id), cur)}</strong>
-        <div class="actions"><button class="btn" data-edit>Edit</button><button class="btn danger" data-delete>${icon('trash', 16)}</button><button class="btn" data-estimate>New estimate</button><button class="btn primary" data-invoice>New invoice</button></div></div>
+        <div class="actions"><button class="btn" data-edit>Edit</button><button class="btn danger" data-delete>${icon('trash', 16)}</button><a class="btn" href="#/statement/${c.id}">Statement</a><button class="btn" data-credit>Credit note</button><button class="btn" data-estimate>New estimate</button><button class="btn" data-receive>Receive payment</button><button class="btn primary" data-invoice>New invoice</button></div></div>
     </div>
     <div class="card table-card"><table class="table">
       <thead><tr><th>No.</th><th>Date</th><th class="hide-sm">Due</th><th>Status</th><th class="num">Total</th></tr></thead>
@@ -71,6 +71,26 @@ export function mount(root, params, app) {
   if (!params.id) return;
   const c = store.find('customers', params.id);
   root.querySelector('[data-edit]')?.addEventListener('click', () => openCustomerForm(c));
+  root.querySelector('[data-credit]')?.addEventListener('click', () => app.quickCreate('credit', { customerId: c.id }));
+  root.querySelector('[data-receive]')?.addEventListener('click', () => {
+    openModal({
+      title: `Receive payment from ${c.name}`,
+      body: `<form>${fields([
+        { name: 'date', label: 'Date', type: 'date', value: today(), required: true },
+        { name: 'amount', label: 'Amount received', type: 'number', step: '0.01', value: Math.max(0, store.customerBalance(c.id)), required: true },
+        { name: 'accountId', label: 'Deposit to', type: 'select', options: store.bankAccounts().map((a) => [a.id, a.name]) },
+        { name: 'method', label: 'Method', type: 'select', options: ['Bank transfer', 'Card', 'Cash', 'Cheque'] },
+      ])}<p class="muted small">Applied to the oldest open invoices first. Anything left over is kept as a payment on account (deposit).</p>
+      <footer class="modal-foot"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Save</button></footer></form>`,
+      onMount: (m) => m.querySelector('form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const d = readForm(e.target);
+        if (!(d.amount > 0)) return toast('Enter an amount');
+        const left = store.receiveCustomerPayment(c.id, d);
+        closeModal(); toast(left > 0 ? `Saved · ${left.toFixed(2)} kept as credit on account` : 'Payment saved');
+      }),
+    });
+  });
   root.querySelector('[data-estimate]')?.addEventListener('click', () => app.quickCreate('estimate', { customerId: c.id }));
   root.querySelector('[data-invoice]')?.addEventListener('click', () => app.quickCreate('invoice', { customerId: c.id }));
   root.querySelector('[data-delete]')?.addEventListener('click', () => {

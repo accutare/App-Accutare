@@ -2,6 +2,7 @@
 import * as store from './store.js';
 import * as sync from './sync.js';
 import { icon } from './utils.js';
+import { toast } from './ui.js';
 import * as dashboard from './views/dashboard.js';
 import * as invoices from './views/invoices.js';
 import * as customers from './views/customers.js';
@@ -20,19 +21,26 @@ import * as time from './views/time.js';
 import * as mileage from './views/mileage.js';
 import * as projects from './views/projects.js';
 import * as payroll from './views/payroll.js';
+import * as credits from './views/credits.js';
+import * as receipts from './views/receipts.js';
+import * as statement from './views/statement.js';
+import { purchaseorders, vendorcredits, paybills, openPOForm } from './views/purchasing.js';
 
-const ROUTES = { dashboard, banking, invoices, estimates, recurring, customers, bills, vendors, expenses, products, reports, settings, accounts, vat, time, mileage, projects, payroll };
+const ROUTES = { dashboard, banking, invoices, estimates, recurring, customers, bills, vendors, expenses, products, reports, settings, accounts, vat, time, mileage, projects, payroll, credits, receipts, statement, purchaseorders, vendorcredits, paybills };
 const NAV = [
   ['dashboard', 'Dashboard', 'dashboard'],
   ['banking', 'Banking', 'bank'],
   ['', 'Sales', null],
   ['invoices', 'Invoices', 'invoice'],
   ['estimates', 'Estimates', 'estimate'],
+  ['receipts', 'Sales receipts', 'invoice'],
+  ['credits', 'Credit notes', 'invoice'],
   ['recurring', 'Recurring', 'repeat'],
   ['customers', 'Customers', 'customers'],
   ['products', 'Products & stock', 'products'],
   ['', 'Purchases', null],
   ['bills', 'Bills', 'bill'],
+  ['purchaseorders', 'Purchase orders', 'bill'],
   ['expenses', 'Expenses', 'expenses'],
   ['vendors', 'Suppliers', 'vendors'],
   ['', 'Work', null],
@@ -79,6 +87,10 @@ const app = {
     if (kind === 'trip') mileage.openTripForm();
     if (kind === 'journal') accounts.openJournalForm();
     if (kind === 'recurring') recurring.openRecurringForm();
+    if (kind === 'credit') credits.openCreditForm(null, preset);
+    if (kind === 'receipt') receipts.openReceiptForm(null, preset);
+    if (kind === 'po') { if (!store.get().vendors.length) return toast('Add a supplier first'); openPOForm(); }
+    if (kind === 'vendorCredit') bills.openBillForm(null, preset, 'vendorCredit');
   },
 };
 

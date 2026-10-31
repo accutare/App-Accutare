@@ -1,7 +1,7 @@
 // Double-entry general ledger.
 // Every source document (invoice, payment, bill, expense, payroll, mileage, manual journal…)
 // is turned into balanced journal lines here. All accounting reports read from this.
-import { round2, addDays } from './utils.js';
+import { round2, addDays, lineNet } from './utils.js';
 
 export const ACCOUNT_TYPES = {
   bank: { label: 'Bank', group: 'asset' },
@@ -101,7 +101,7 @@ function build(s) {
     if (inv.draft) continue;
     const rate = Number(inv.rate || 1);
     let net = 0, vat = 0;
-    for (const l of inv.lines) { const n = round2(l.qty * l.price); net += n; vat += round2(n * (l.vatRate || 0) / 100); }
+    for (const l of inv.lines) { const n = lineNet(l); net += n; vat += round2(n * (l.vatRate || 0) / 100); }
     net = round2(net * rate); vat = round2(vat * rate);
     const cust = s.customers.find((c) => c.id === inv.customerId)?.name || '';
     add(inv.date, { type: 'invoice', id: inv.id }, `Invoice #${inv.number} · ${cust}`, [
@@ -110,10 +110,37 @@ function build(s) {
       { accountId: VAT, credit: vat },
     ]);
     for (const p of inv.payments || []) {
+      if (p.creditId) continue; // credit note / deposit applied: AR to AR, nothing to post
       const amt = round2(p.amount * rate);
       add(p.date, { type: 'invoice', id: inv.id }, `Payment · invoice #${inv.number}`, [
         { accountId: payAccount(p), debit: amt }, { accountId: AR, credit: amt }]);
     }
+  }
+
+  const linesNetVat = (lines) => {
+    let net = 0, vat = 0;
+    for (const l of lines || []) { const n = lineNet(l); net += n; vat += round2(n * (l.vatRate || 0) / 100); }
+    return [round2(net), round2(vat)];
+  };
+  for (const cn of s.creditNotes || []) {
+    const cust = s.customers.find((c) => c.id === cn.customerId)?.name || '';
+    if (cn.type === 'deposit') {
+      add(cn.date, { type: 'credit', id: cn.id }, `Payment received · ${cust}`, [
+        { accountId: cn.accountId || defaultBank, debit: cn.amount }, { accountId: AR, credit: cn.amount }]);
+    } else {
+      const [net, vat] = linesNetVat(cn.lines);
+      add(cn.date, { type: 'credit', id: cn.id }, `Credit note ${cn.number} · ${cust}`, [
+        { accountId: bySystem('sales'), debit: net }, { accountId: VAT, debit: vat }, { accountId: AR, credit: net + vat }]);
+    }
+    for (const r of cn.refunds || []) {
+      add(r.date, { type: 'credit', id: cn.id }, `Refund · ${cust}`, [{ accountId: AR, debit: r.amount }, { accountId: r.accountId || defaultBank, credit: r.amount }]);
+    }
+  }
+  for (const sr of s.salesReceipts || []) {
+    const [net, vat] = linesNetVat(sr.lines);
+    const cust = s.customers.find((c) => c.id === sr.customerId)?.name || 'Cash sale';
+    add(sr.date, { type: 'receipt', id: sr.id, projectId: sr.projectId }, `Sales receipt ${sr.number} · ${cust}`, [
+      { accountId: sr.accountId || defaultBank, debit: net + vat }, { accountId: bySystem('sales'), credit: net }, { accountId: VAT, credit: vat }]);
   }
 
   for (const b of s.bills) {
@@ -127,8 +154,20 @@ function build(s) {
     }
     add(b.date, { type: 'bill', id: b.id }, `Bill ${b.number || ''} · ${vend}`, [...lines, { accountId: AP, credit: round2(total) }]);
     for (const p of b.payments || []) {
+      if (p.vendorCreditId) continue;
       add(p.date, { type: 'bill', id: b.id }, `Bill payment · ${vend}`, [{ accountId: AP, debit: p.amount }, { accountId: payAccount(p), credit: p.amount }]);
     }
+  }
+
+  for (const vc of s.vendorCredits || []) {
+    const vend = s.vendors.find((v) => v.id === vc.vendorId)?.name || '';
+    const lines = []; let total = 0;
+    for (const l of vc.lines) {
+      const net = round2(l.amount), vat = round2(net * (l.vatRate || 0) / 100);
+      total += net + vat;
+      lines.push({ accountId: byName(l.category, 'other_expense'), credit: net, memo: l.description }, { accountId: VAT, credit: vat });
+    }
+    add(vc.date, { type: 'vendorCredit', id: vc.id }, `Supplier credit ${vc.number || ''} · ${vend}`, [{ accountId: AP, debit: round2(total) }, ...lines]);
   }
 
   for (const e of s.expenses) {
