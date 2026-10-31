@@ -39,7 +39,7 @@ export function load() {
 }
 
 export const get = () => state;
-const persist = () => localStorage.setItem(KEY, JSON.stringify(state));
+const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* storage unavailable: keep in memory */ } };
 
 export function save() { persist(); listeners.forEach((fn) => fn()); }
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
