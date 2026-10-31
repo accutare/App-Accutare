@@ -26,6 +26,8 @@ export function render() {
         { name: 'fyStartDay', label: 'Financial year starts (day)', type: 'number' },
         { name: 'hourlyRate', label: 'Default hourly rate', type: 'number', step: '0.01' },
         { name: 'reminderDays', label: 'Days between payment reminders', type: 'number' },
+        { name: 'closingDate', label: 'Close the books up to (closing date)', type: 'date' },
+        { name: 'closingPassword', label: 'Closing date password (optional)', type: 'password', placeholder: co.closingHash ? '•••••• (set – type to change)' : '' },
       ], co)}
       <footer class="modal-foot"><button class="btn primary">Save settings</button></footer>
     </form>
@@ -50,6 +52,7 @@ export function render() {
 
     <div class="card">
       <h3>Data</h3>
+      <p><a href="#/audit">View audit log</a> · <a href="#/accounts">Chart of accounts</a> · <a href="#/budgets">Budgets</a> · <a href="#/assets">Fixed assets</a></p>
       <p class="muted">${sync.isOnline() ? 'Your books are saved on the server (with a daily backup). You can also download a copy.' : 'Your data is stored in this browser only. Export a backup regularly.'}</p>
       <div class="actions wrap">
         <button class="btn" data-export>Export backup (JSON)</button>
@@ -60,10 +63,18 @@ export function render() {
     </div>`;
 }
 
+export async function sha256(text) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`accutare:${text}`));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export function mount(root) {
-  root.querySelector('[data-company]').addEventListener('submit', (e) => {
+  root.querySelector('[data-company]').addEventListener('submit', async (e) => {
     e.preventDefault();
-    store.updateCompany(readForm(e.target));
+    const d = readForm(e.target);
+    if (d.closingPassword) d.closingHash = await sha256(d.closingPassword);
+    delete d.closingPassword;
+    store.updateCompany(d);
     toast('Settings saved');
   });
   root.querySelector('[data-brand]').addEventListener('submit', (e) => {

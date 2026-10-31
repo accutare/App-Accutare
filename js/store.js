@@ -49,6 +49,9 @@ function defaults() {
     vendorCredits: [],
     purchaseOrders: [],
     bankRules: [],
+    assets: [],
+    budgets: [],
+    auditLog: [],
     vatReturns: [],
     users: [],
     customers: [],
@@ -94,6 +97,8 @@ function migrate(old) {
     // v1/v2 data: single bank kept in company settings
     s.accounts = [...L.defaultAccounts(), bankAccountDefaults(old.company?.bankName || 'Business current account', Number(old.company?.openingBalance || 0))];
   }
+  // add any system/default accounts introduced in newer versions
+  for (const a of L.defaultAccounts()) if (!s.accounts.some((x) => x.id === a.id || (a.system && x.system === a.system))) s.accounts.push(a);
   const firstBank = s.accounts.find((a) => a.type === 'bank')?.id;
   s.bankTransactions.forEach((t) => { t.accountId ||= firstBank; });
   return s;
@@ -119,25 +124,61 @@ export function subscribe(fn) { listeners.add(fn); return () => listeners.delete
 
 export function find(coll, id) { return state[coll].find((x) => x.id === id); }
 
+// ---------- Closing date & audit trail ----------
+
+const DATE_FIELD = { invoices: 'date', estimates: null, bills: 'date', expenses: 'date', otherIncome: 'date', journals: 'date', payRuns: 'date', trips: 'date',
+  creditNotes: 'date', salesReceipts: 'date', vendorCredits: 'date', bankTransactions: 'date', assets: 'purchaseDate', stockAdjustments: 'date' };
+let unlocked = false;
+let actor = 'You';
+export const setActor = (name) => { actor = name; };
+export class PeriodLockedError extends Error { constructor(date) { super(`The books are closed up to ${date}`); this.name = 'PeriodLockedError'; } }
+export const unlockPeriod = () => { unlocked = true; };
+export const isClosed = (date) => !unlocked && !!state.company.closingDate && !!date && date <= state.company.closingDate;
+
+function guardClosed(coll, ...recs) {
+  const f = DATE_FIELD[coll];
+  if (!f) return;
+  for (const r of recs) if (r && isClosed(r[f])) throw new PeriodLockedError(state.company.closingDate);
+}
+
+const LABEL_KEYS = ['number', 'name', 'payee', 'description', 'period', 'purpose', 'memo'];
+function audit(action, coll, rec) {
+  if (coll === 'auditLog') return;
+  const label = LABEL_KEYS.map((k) => rec?.[k]).find(Boolean) || '';
+  state.auditLog.push({ at: new Date().toISOString(), user: actor, action, coll, id: rec?.id, label: String(label).slice(0, 80) });
+  if (state.auditLog.length > 3000) state.auditLog.splice(0, state.auditLog.length - 3000);
+}
+
 export function upsert(coll, item) {
   if (item.id && find(coll, item.id)) {
     const i = state[coll].findIndex((x) => x.id === item.id);
+    guardClosed(coll, state[coll][i], item);
     state[coll][i] = { ...state[coll][i], ...item, updatedAt: new Date().toISOString() };
+    audit('updated', coll, state[coll][i]);
     save();
     return state[coll][i];
   }
+  guardClosed(coll, item);
   const created = { ...item, id: item.id || uid(), createdAt: new Date().toISOString() };
   state[coll].push(created);
+  audit('created', coll, created);
   save();
   return created;
 }
 
 export function remove(coll, id) {
+  const rec = find(coll, id);
+  guardClosed(coll, rec);
   state[coll] = state[coll].filter((x) => x.id !== id);
+  audit('deleted', coll, rec);
   save();
 }
 
-export function updateCompany(patch) { state.company = { ...state.company, ...patch }; save(); }
+export function updateCompany(patch) {
+  state.company = { ...state.company, ...patch };
+  if (!Object.keys(patch).every((k) => k.startsWith('next'))) audit('updated', 'settings', { name: Object.keys(patch).join(', ') });
+  save();
+}
 
 export function nextInvoiceNumber() {
   const n = state.company.nextInvoiceNumber;

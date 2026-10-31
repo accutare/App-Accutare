@@ -1,5 +1,7 @@
 import * as store from '../store.js';
 import * as L from '../ledger.js';
+import { depreciationSchedule } from '../ledger.js';
+import { budgetMonths } from './budgets.js';
 import { money, today, esc, icon, fmtDate, round2, addDays, lineNet } from '../utils.js';
 
 export const title = 'Reports';
@@ -30,6 +32,7 @@ const CATALOG = [
   ['What you owe', [['ap', 'Accounts payable ageing'], ['unpaid-bills', 'Unpaid bills']]],
   ['Expenses', [['exp-category', 'Expenses by category'], ['exp-supplier', 'Expenses by supplier'], ['mileage', 'Mileage log']]],
   ['Tax & accountant', [['vat', 'VAT summary (9 boxes)'], ['tb', 'Trial balance'], ['gl', 'General ledger'], ['journal', 'Journal'], ['payroll', 'Payroll summary']]],
+  ['Planning', [['budget', 'Budget vs actual'], ['assets', 'Fixed asset register'], ['audit', 'Audit log']]],
   ['Stock', [['stock', 'Stock valuation']]],
 ];
 const NAMES = Object.fromEntries(CATALOG.flatMap(([, r]) => r));
@@ -214,6 +217,34 @@ const REPORTS = {
     return table(['Project', 'Income', 'Costs', 'Profit', 'Margin'], s.projects.map((p) => { const x = store.projectSummary(p.id);
       return row([esc(p.name), m(x.income), m(x.costs), m(x.profit), x.income ? Math.round((x.profit / x.income) * 100) + '%' : '—'], `#/projects/${p.id}`); }));
   },
+  budget() {
+    const s = store.get();
+    const b = s.budgets.find((x) => x.start <= range[1] && addDays(x.start, 365) > range[0]) || s.budgets[s.budgets.length - 1];
+    if (!b) return '<p class="muted">No budget yet — create one in <a href="#/budgets">Budgets</a>.</p>';
+    const months = budgetMonths(b);
+    const inR = months.map((mo) => mo >= range[0].slice(0, 7) && mo <= range[1].slice(0, 7));
+    const bEnd = addDays(new Date(new Date(b.start + 'T00:00:00').setFullYear(Number(b.start.slice(0, 4)) + 1)).toISOString().slice(0, 10), -1);
+    const from = range[0] > b.start ? range[0] : b.start, to = range[1] < bEnd ? range[1] : bEnd;
+    const p = store.profitAndLoss(from, to);
+    const actual = Object.fromEntries([...p.income, ...p.otherIncome, ...p.cos, ...p.expenses].map((r) => [r.account.id, r.amount]));
+    const ids = [...new Set([...Object.keys(b.amounts || {}), ...Object.keys(actual)])];
+    const rowsFor = (types) => ids.map((id) => store.find('accounts', id)).filter((a) => a && types.includes(a.type)).map((a) => {
+      const bud = round2((b.amounts?.[a.id] || []).reduce((x, v, i) => x + (inR[i] ? v : 0), 0)), act = actual[a.id] || 0;
+      return row([esc(a.name), m(bud), m(act), m(act - bud), bud ? Math.round((act / bud) * 100) + '%' : '—']);
+    });
+    return `<p class="muted">${esc(b.name)} · compared ${fmtDate(from)} – ${fmtDate(to)}</p>${table(['Account', 'Budget', 'Actual', 'Difference', '% of budget'], [
+      '<tr class="section"><td>Income</td><td></td><td></td><td></td><td></td></tr>', ...rowsFor(['income', 'other_income']),
+      '<tr class="section"><td>Expenses</td><td></td><td></td><td></td><td></td></tr>', ...rowsFor(['cost_of_sales', 'expense'])])}`;
+  },
+  assets() {
+    const s = store.get();
+    return table(['Asset', 'Bought', 'Cost', 'Depreciation in period', 'Book value at end'], s.assets.map((a) => {
+      const sch = depreciationSchedule(a, range[1]);
+      const inP = sch.filter((d) => d.date >= range[0]).reduce((x, d) => x + d.amount, 0);
+      return row([esc(a.name), fmtDate(a.purchaseDate), m(a.cost), m(inP), m(sch.length ? sch[sch.length - 1].nbv : a.cost)], '#/assets');
+    }));
+  },
+  audit() { return '<p><a href="#/audit">Open the audit log →</a></p>'; },
   stock() {
     const s = store.get();
     const ps = s.products.filter((p) => p.trackStock);

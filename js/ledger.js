@@ -26,6 +26,8 @@ export function defaultAccounts() {
     A('1100', 'Accounts receivable', 'ar', 'ar'),
     A('1300', 'Stock', 'current_asset'),
     A('1500', 'Equipment & tools', 'fixed_asset'),
+    A('1510', 'Vehicles', 'fixed_asset'),
+    A('1590', 'Accumulated depreciation', 'fixed_asset', 'accum_dep'),
     A('2100', 'Accounts payable', 'ap', 'ap'),
     A('2200', 'VAT control', 'current_liability', 'vat'),
     A('2210', 'PAYE & NI payable', 'current_liability', 'paye'),
@@ -55,6 +57,7 @@ export function defaultAccounts() {
     A('6200', 'Wages', 'expense', 'wages'),
     A('6210', 'Employer NI', 'expense', 'employer_ni'),
     A('6220', 'Pension contributions', 'expense', 'employer_pension'),
+    A('6300', 'Depreciation', 'expense', 'depreciation'),
     A('6900', 'Other', 'expense', 'other_expense'),
   ];
 }
@@ -212,11 +215,42 @@ function build(s) {
       { accountId: bySystem('vehicle'), debit: t.claim }, { accountId: bySystem('dla'), credit: t.claim }]);
   }
 
+  for (const a of s.assets || []) {
+    if (a.paidFrom) add(a.purchaseDate, { type: 'asset', id: a.id }, `Asset purchase · ${a.name}`, [
+      { accountId: a.accountId, debit: a.cost }, { accountId: a.paidFrom, credit: a.cost }]);
+    for (const d of depreciationSchedule(a)) {
+      add(d.date, { type: 'asset', id: a.id }, `Depreciation · ${a.name}`, [
+        { accountId: bySystem('depreciation'), debit: d.amount }, { accountId: bySystem('accum_dep'), credit: d.amount }]);
+    }
+  }
+
   for (const j of s.journals) {
     add(j.date, { type: 'journal', id: j.id }, j.memo || `Journal ${j.number || ''}`, j.lines.map((l) => ({ ...l, debit: Number(l.debit || 0), credit: Number(l.credit || 0) })));
   }
 
   return out.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/** Monthly depreciation up to the last month-end on or before today (or disposal). */
+export function depreciationSchedule(a, until) {
+  const end = until || new Date().toISOString().slice(0, 10);
+  const out = [];
+  if (!a.purchaseDate || !a.cost) return out;
+  const cost = Number(a.cost), residual = Number(a.residual || 0);
+  let nbv = cost;
+  const monthly = (cost - residual) / (Number(a.lifeYears || 1) * 12);
+  const d = new Date(a.purchaseDate + 'T00:00:00');
+  for (let i = 0; i < 600; i++) {
+    const me = new Date(d.getFullYear(), d.getMonth() + i + 1, 0);
+    const iso = `${me.getFullYear()}-${String(me.getMonth() + 1).padStart(2, '0')}-${String(me.getDate()).padStart(2, '0')}`;
+    if (iso > end || (a.disposedDate && iso > a.disposedDate) || nbv <= residual + 0.005) break;
+    let amt = a.method === 'reducing' ? nbv * Number(a.rate || 25) / 100 / 12 : monthly;
+    amt = round2(Math.min(amt, nbv - residual));
+    if (amt <= 0) break;
+    nbv = round2(nbv - amt);
+    out.push({ date: iso, amount: amt, nbv });
+  }
+  return out;
 }
 
 /** { accountId: { debit, credit } } for entries with from <= date <= to */

@@ -25,8 +25,12 @@ import * as credits from './views/credits.js';
 import * as receipts from './views/receipts.js';
 import * as statement from './views/statement.js';
 import { purchaseorders, vendorcredits, paybills, openPOForm } from './views/purchasing.js';
+import * as assets from './views/assets.js';
+import * as budgets from './views/budgets.js';
+import * as audit from './views/audit.js';
+import { sha256 } from './views/settings.js';
 
-const ROUTES = { dashboard, banking, invoices, estimates, recurring, customers, bills, vendors, expenses, products, reports, settings, accounts, vat, time, mileage, projects, payroll, credits, receipts, statement, purchaseorders, vendorcredits, paybills };
+const ROUTES = { dashboard, banking, invoices, estimates, recurring, customers, bills, vendors, expenses, products, reports, settings, accounts, vat, time, mileage, projects, payroll, credits, receipts, statement, purchaseorders, vendorcredits, paybills, assets, budgets, audit };
 const NAV = [
   ['dashboard', 'Dashboard', 'dashboard'],
   ['banking', 'Banking', 'bank'],
@@ -52,6 +56,8 @@ const NAV = [
   ['reports', 'Reports', 'reports'],
   ['vat', 'VAT returns', 'vat'],
   ['accounts', 'Chart of accounts', 'book'],
+  ['assets', 'Fixed assets', 'products'],
+  ['budgets', 'Budgets', 'reports'],
   ['settings', 'Settings', 'settings'],
 ];
 const MOBILE_NAV = ['dashboard', 'banking', 'invoices', 'bills'];
@@ -132,6 +138,7 @@ async function init() {
   renderNav();
   const who = document.getElementById('who');
   if (sync.isOnline()) {
+    store.setActor(sync.user().name || sync.user().email);
     who.innerHTML = `<span>${sync.user().name || sync.user().email}</span><small>${sync.user().role}${sync.canWrite() ? '' : ' · read-only'}</small>`;
     if (!sync.canWrite()) document.body.classList.add('read-only');
   } else who.innerHTML = '<small>Local mode · data stays in this browser</small>';
@@ -144,6 +151,20 @@ async function init() {
     if (b) app.quickCreate(b.dataset.create);
   });
   window.addEventListener('hashchange', route);
+  // Closed-period guard: ask for the closing-date password, then let the user retry.
+  const onLocked = async (err) => {
+    if (err?.name !== 'PeriodLockedError') return false;
+    const co = store.get().company;
+    if (co.closingHash) {
+      const pw = prompt(`${err.message}. Enter the closing date password to make changes:`);
+      if (!pw) return true;
+      if ((await sha256(pw)) !== co.closingHash) { toast('Wrong password'); return true; }
+    } else if (!confirm(`${err.message}. Change it anyway?`)) return true;
+    store.unlockPeriod(); toast('Closed period unlocked for this session — please repeat the change');
+    return true;
+  };
+  window.addEventListener('error', (e) => { if (e.error?.name === 'PeriodLockedError') { e.preventDefault(); onLocked(e.error); } });
+  window.addEventListener('unhandledrejection', (e) => { if (e.reason?.name === 'PeriodLockedError') { e.preventDefault(); onLocked(e.reason); } });
   store.subscribe(route);
   route();
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
